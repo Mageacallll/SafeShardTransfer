@@ -26,6 +26,7 @@ class Coordinator(Process):
         super().__init__(node_id)
         self.store = MetadataStore()
         self.event_log = []
+        self._event_seq = 0
 
     # --------------------------------------------------
     # Public API
@@ -235,7 +236,9 @@ class Coordinator(Process):
         record = {
             "time": timestamp,
             "node": self.node_id,
+            "seq": self._event_seq,
             **fields,
         }
+        self._event_seq += 1
         self.event_log.append(record)
         print(f"[t={timestamp}] server={self.node_id} {fields}")

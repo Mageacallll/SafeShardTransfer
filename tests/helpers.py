@@ -5,9 +5,9 @@ def merged_events(*nodes):
     Sorting key:
     1. logical time
     2. node id
-    3. event name
+    3. per-node emission sequence
 
-    This makes event ordering deterministic for assertions.
+    This preserves same-time event order within a node.
     """
     events = []
     for node in nodes:
@@ -15,7 +15,7 @@ def merged_events(*nodes):
 
     return sorted(
         events,
-        key=lambda e: (e["time"], e["node"], e.get("event", "")),
+        key=lambda e: (e["time"], e["node"], e.get("seq", 0)),
     )
 
 

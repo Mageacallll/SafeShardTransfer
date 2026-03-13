@@ -38,6 +38,7 @@ class ShardServer(Process):
         self.pending_incoming = {}
         
         self.event_log = []
+        self._event_seq = 0
 
     # --------------------------------------------------
     # Local shard management
@@ -392,7 +393,9 @@ class ShardServer(Process):
         record = {
             "time": timestamp,
             "node": self.node_id,
+            "seq": self._event_seq,
             **fields,
         }
+        self._event_seq += 1
         self.event_log.append(record)
         print(f"[t={timestamp}] server={self.node_id} {fields}")
