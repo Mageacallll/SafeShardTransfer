@@ -36,6 +36,8 @@ class ShardServer(Process):
 
         # shard_id -> temporarily received state waiting for activation
         self.pending_incoming = {}
+        
+        self.event_log = []
 
     # --------------------------------------------------
     # Local shard management
@@ -387,4 +389,10 @@ class ShardServer(Process):
 
     def log_event(self, **fields):
         timestamp = self.network.loop.time if self.network and self.network.loop else "?"
+        record = {
+            "time": timestamp,
+            "node": self.node_id,
+            **fields,
+        }
+        self.event_log.append(record)
         print(f"[t={timestamp}] server={self.node_id} {fields}")
