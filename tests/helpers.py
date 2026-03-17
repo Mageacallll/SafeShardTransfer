@@ -41,3 +41,20 @@ def find_all_events(events, event_name):
     Return all events with the given name.
     """
     return [event for event in events if event.get("event") == event_name]
+
+def stable_holders(shard_id, *servers):
+    holders = []
+    for server in servers:
+        shard = getattr(server, "shards", {}).get(shard_id)
+        if shard is not None and shard["state"].value == "STABLE":
+            holders.append(server.node_id)
+    return holders
+
+
+def assert_at_most_one_stable_holder(shard_id, *servers):
+    holders = stable_holders(shard_id, *servers)
+    assert len(holders) <= 1, f"Expected at most one stable holder, got {holders}"
+
+
+def has_event(node, event_name):
+    return any(e.get("event") == event_name for e in getattr(node, "event_log", []))
