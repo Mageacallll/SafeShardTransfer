@@ -1,0 +1,87 @@
+scenarios:
+  - name: drop_transfer_shard_message
+    description: Drop TransferShard so reconfiguration stalls safely in TRANSFER.
+    setup:
+      shard_id: s1
+      initial_owner: A
+      target_owner: B
+      initial_epoch: 1
+      initial_data:
+        k: v
+    inject:
+      type: drop_message
+      message_type: TransferShard
+    expected:
+      safety:
+        at_most_one_stable_owner: true
+        no_reassign_complete: true
+        no_activate_complete: true
+      final_metadata:
+        owner: A
+        state: TRANSFER
+        epoch: 1
+
+  - name: old_owner_crash_during_freeze
+    description: Crash the old owner before freeze is acknowledged.
+    setup:
+      shard_id: s1
+      initial_owner: A
+      target_owner: B
+      initial_epoch: 1
+      initial_data:
+        k: v
+    inject:
+      type: crash_node
+      node_id: A
+      at_time: 2
+    expected:
+      safety:
+        at_most_one_stable_owner: true
+        no_reassign_complete: true
+      final_metadata:
+        owner: A
+        state: FREEZE
+        epoch: 1
+
+  - name: new_owner_crash_before_transfer_ack
+    description: Crash the new owner before it can receive TransferShard and ack.
+    setup:
+      shard_id: s1
+      initial_owner: A
+      target_owner: B
+      initial_epoch: 1
+      initial_data:
+        k: v
+    inject:
+      type: crash_node
+      node_id: B
+      at_time: 5
+    expected:
+      safety:
+        at_most_one_stable_owner: true
+        no_reassign_complete: true
+      final_metadata:
+        owner: A
+        state: TRANSFER
+        epoch: 1
+
+  - name: false_suspicion_safe_reconfig
+    description: Trigger unnecessary reassignment of a healthy old owner.
+    setup:
+      shard_id: s1
+      initial_owner: A
+      target_owner: B
+      initial_epoch: 1
+      initial_data:
+        k: v
+    inject:
+      type: false_suspicion
+      trigger_reassign: true
+    expected:
+      safety:
+        at_most_one_stable_owner: true
+        reassign_complete: true
+      final_metadata:
+        owner: B
+        state: STABLE
+        epoch: 2
