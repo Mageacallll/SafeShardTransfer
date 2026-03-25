@@ -1,108 +1,285 @@
-from common.types import BeginTransfer, ClientRequest, FreezeShard, TransferShard
+from common.types import (
+    ActivateShard,
+    BeginTransfer,
+    CleanupShard,
+    ClientReply,
+    ClientRequest,
+    FreezeShard,
+    ShardState,
+    TransferShard,
+)
 from shardserver.server import ShardServer
 from sim.harness import Harness
-from sim.process import Process
 
 
-class DummyClient(Process):
-    def __init__(self, node_id: str):
-        super().__init__(node_id)
-        self.replies = []
-
-    def on_message(self, src, message):
-        self.replies.append((src, message))
-
-
-def setup_server_only():
+def setup_server_system():
     h = Harness(drop_prob=0.0, min_delay=1, max_delay=1, seed=0)
+
     server = ShardServer("A", coordinator_id="coord")
-    coord = DummyClient("coord")
-    client = DummyClient("client")
     peer = ShardServer("B", coordinator_id="coord")
 
     h.add_node(server)
-    h.add_node(coord)
-    h.add_node(client)
     h.add_node(peer)
 
+    return h, server, peer
+
+
+# --------------------------------------------------
+# Client request behavior
+# --------------------------------------------------
+
+def test_get_request_success():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=1, data={"x": 42})
+
+    server.on_message(
+        "client1",
+        ClientRequest(shard_id="s1", epoch=1, key="x", value=None, op="GET"),
+    )
+
+    assert server.event_log[-1]["event"] == "client_get_ok"
+
+
+def test_put_request_success():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=1, data={})
+
+    server.on_message(
+        "client1",
+        ClientRequest(shard_id="s1", epoch=1, key="x", value=99, op="PUT"),
+    )
+
+    assert server.shards["s1"]["data"]["x"] == 99
+    assert server.event_log[-1]["event"] == "client_put_ok"
+
+
+def test_reject_missing_shard():
+    h, server, _ = setup_server_system()
+
+    server.on_message(
+        "client1",
+        ClientRequest(shard_id="missing", epoch=1, key="x", value=None, op="GET"),
+    )
+
+    assert server.event_log[-1]["event"] == "client_reject_missing_shard"
+
+
+def test_reject_epoch_mismatch():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=2, data={"x": 42})
+
+    server.on_message(
+        "client1",
+        ClientRequest(shard_id="s1", epoch=1, key="x", value=None, op="GET"),
+    )
+
+    assert server.event_log[-1]["event"] == "client_reject_epoch_mismatch"
+
+
+def test_reject_when_not_stable():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=1, data={"x": 42})
+    server.shards["s1"]["state"] = ShardState.FREEZE
+
+    server.on_message(
+        "client1",
+        ClientRequest(shard_id="s1", epoch=1, key="x", value=None, op="GET"),
+    )
+
+    assert server.event_log[-1]["event"] == "client_reject_reconfiguring"
+
+
+def test_reject_unknown_operation():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=1, data={})
+
+    server.on_message(
+        "client1",
+        ClientRequest(shard_id="s1", epoch=1, key="x", value=None, op="DELETE"),
+    )
+
+    assert server.event_log[-1]["event"] == "client_reject_unknown_op"
+
+
+# --------------------------------------------------
+# Freeze behavior
+# --------------------------------------------------
+
+def test_freeze_shard_success():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=1, data={"x": 1})
+
+    server.on_message("coord", FreezeShard(shard_id="s1", epoch=1))
+
+    assert server.shards["s1"]["state"] == ShardState.FREEZE
+    assert server.event_log[-1]["event"] == "freeze_enter"
+
+
+def test_freeze_missing_shard():
+    h, server, _ = setup_server_system()
+
+    server.on_message("coord", FreezeShard(shard_id="s1", epoch=1))
+
+    assert server.event_log[-1]["event"] == "freeze_missing_shard"
+
+
+def test_freeze_epoch_mismatch():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=2, data={})
+
+    server.on_message("coord", FreezeShard(shard_id="s1", epoch=1))
+
+    assert server.shards["s1"]["state"] == ShardState.STABLE
+    assert server.event_log[-1]["event"] == "freeze_epoch_mismatch"
+
+
+# --------------------------------------------------
+# Transfer out behavior
+# --------------------------------------------------
+
+def test_begin_transfer_success():
+    h, server, _ = setup_server_system()
     server.init_shard("s1", epoch=1, data={"x": 10})
-    return h, server, coord, client, peer
+    server.shards["s1"]["state"] = ShardState.FREEZE
+
+    server.on_message("coord", BeginTransfer(shard_id="s1", epoch=1, target="B"))
+
+    assert server.shards["s1"]["state"] == ShardState.TRANSFER
+    assert server.event_log[-1]["event"] == "transfer_out_start"
 
 
-def test_server_accepts_get_when_stable():
-    h, server, coord, client, peer = setup_server_only()
+def test_begin_transfer_missing_shard():
+    h, server, _ = setup_server_system()
 
-    req = ClientRequest(shard_id="s1", epoch=1, key="x", value=None, op="GET")
-    h.schedule(1, server.on_message, "client", req)
-    h.run()
+    server.on_message("coord", BeginTransfer(shard_id="s1", epoch=1, target="B"))
 
-    assert len(client.replies) == 1
-    _, reply = client.replies[0]
-    assert reply.success is True
-    assert reply.value == 10
-    assert reply.error is None
+    assert server.event_log[-1]["event"] == "begin_transfer_missing_shard"
 
 
-def test_server_rejects_epoch_mismatch():
-    h, server, coord, client, peer = setup_server_only()
+def test_begin_transfer_epoch_mismatch():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=2, data={"x": 10})
+    server.shards["s1"]["state"] = ShardState.FREEZE
 
-    req = ClientRequest(shard_id="s1", epoch=999, key="x", value=None, op="GET")
-    h.schedule(1, server.on_message, "client", req)
-    h.run()
+    server.on_message("coord", BeginTransfer(shard_id="s1", epoch=1, target="B"))
 
-    _, reply = client.replies[0]
-    assert reply.success is False
-    assert reply.error == "stale_or_wrong_epoch"
+    assert server.event_log[-1]["event"] == "begin_transfer_epoch_mismatch"
 
 
-def test_server_rejects_when_frozen():
-    h, server, coord, client, peer = setup_server_only()
+def test_begin_transfer_wrong_state():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=1, data={"x": 10})
+    server.shards["s1"]["state"] = ShardState.STABLE
 
-    h.schedule(1, server.on_message, "coord", FreezeShard(shard_id="s1", epoch=1))
-    h.schedule(3, server.on_message, "client", ClientRequest(
-        shard_id="s1", epoch=1, key="x", value=None, op="GET"
-    ))
-    h.run()
+    server.on_message("coord", BeginTransfer(shard_id="s1", epoch=1, target="B"))
 
-    _, reply = client.replies[-1]
-    assert reply.success is False
-    assert reply.error == "reconfiguring"
+    assert server.event_log[-1]["event"] == "begin_transfer_wrong_state"
 
 
-def test_server_sends_freeze_ack():
-    h, server, coord, client, peer = setup_server_only()
+# --------------------------------------------------
+# Transfer in behavior
+# --------------------------------------------------
 
-    h.schedule(1, server.on_message, "coord", FreezeShard(shard_id="s1", epoch=1))
-    h.run()
+def test_receive_transfer_shard_creates_pending_state():
+    h, _, peer = setup_server_system()
 
-    assert len(coord.replies) == 1
-    src, msg = coord.replies[0]
-    assert src == "A"
-    assert msg.__class__.__name__ == "FreezeAck"
-    assert msg.shard_id == "s1"
-    assert msg.epoch == 1
-
-
-def test_begin_transfer_sends_transfer_shard():
-    h, server, coord, client, peer = setup_server_only()
-
-    h.schedule(1, server.on_message, "coord", FreezeShard(shard_id="s1", epoch=1))
-    h.schedule(3, server.on_message, "coord", BeginTransfer(shard_id="s1", epoch=1, target="B"))
-    h.run()
+    peer.on_message("A", TransferShard(shard_id="s1", epoch=1, data={"x": 10}))
 
     assert "s1" in peer.pending_incoming
+    assert peer.pending_incoming["s1"]["epoch"] == 1
     assert peer.pending_incoming["s1"]["data"] == {"x": 10}
+    assert peer.pending_incoming["s1"]["source"] == "A"
+    assert peer.event_log[-1]["event"] == "transfer_in_received"
 
 
-def test_activate_installs_pending_state():
-    h, server, coord, client, peer = setup_server_only()
+# --------------------------------------------------
+# Activate behavior
+# --------------------------------------------------
 
-    h.schedule(1, peer.on_message, "A", TransferShard(shard_id="s1", epoch=1, data={"x": 10}))
-    h.schedule(3, peer.on_message, "coord", __import__("common.types", fromlist=["ActivateShard"]).ActivateShard(
-        shard_id="s1", epoch=2
-    ))
-    h.run()
+def test_activate_success():
+    h, _, peer = setup_server_system()
+    peer.pending_incoming["s1"] = {
+        "epoch": 1,
+        "data": {"x": 10},
+        "source": "A",
+    }
+
+    peer.on_message("coord", ActivateShard(shard_id="s1", epoch=2))
 
     assert "s1" in peer.shards
     assert peer.shards["s1"]["epoch"] == 2
-    assert peer.shards["s1"]["data"]["x"] == 10
+    assert peer.shards["s1"]["state"] == ShardState.STABLE
+    assert peer.shards["s1"]["data"] == {"x": 10}
+    assert "s1" not in peer.pending_incoming
+    assert peer.event_log[-1]["event"] == "activate_complete"
+
+
+def test_activate_missing_pending_state():
+    h, _, peer = setup_server_system()
+
+    peer.on_message("coord", ActivateShard(shard_id="s1", epoch=2))
+
+    assert peer.event_log[-1]["event"] == "activate_missing_pending_state"
+
+
+def test_activate_bad_epoch():
+    h, _, peer = setup_server_system()
+    peer.pending_incoming["s1"] = {
+        "epoch": 2,
+        "data": {"x": 10},
+        "source": "A",
+    }
+
+    peer.on_message("coord", ActivateShard(shard_id="s1", epoch=2))
+
+    assert "s1" not in peer.shards
+    assert "s1" in peer.pending_incoming
+    assert peer.event_log[-1]["event"] == "activate_bad_epoch"
+
+
+# --------------------------------------------------
+# Cleanup behavior
+# --------------------------------------------------
+
+def test_cleanup_success():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=1, data={"x": 10})
+
+    server.on_message("coord", CleanupShard(shard_id="s1", epoch=2))
+
+    assert "s1" not in server.shards
+    assert server.event_log[-1]["event"] == "cleanup_complete"
+
+
+def test_cleanup_missing_shard():
+    h, server, _ = setup_server_system()
+
+    server.on_message("coord", CleanupShard(shard_id="s1", epoch=2))
+
+    assert server.event_log[-1]["event"] == "cleanup_missing_shard"
+
+
+# --------------------------------------------------
+# End-to-end local flow
+# --------------------------------------------------
+
+def test_end_to_end_server_side_flow():
+    h, server, peer = setup_server_system()
+    server.init_shard("s1", epoch=1, data={"k": "v"})
+
+    server.on_message("coord", FreezeShard(shard_id="s1", epoch=1))
+    assert server.shards["s1"]["state"] == ShardState.FREEZE
+
+    server.on_message("coord", BeginTransfer(shard_id="s1", epoch=1, target="B"))
+    assert server.shards["s1"]["state"] == ShardState.TRANSFER
+
+    peer.on_message("A", TransferShard(shard_id="s1", epoch=1, data={"k": "v"}))
+    assert peer.pending_incoming["s1"]["data"] == {"k": "v"}
+
+    peer.on_message("coord", ActivateShard(shard_id="s1", epoch=2))
+    assert peer.shards["s1"]["epoch"] == 2
+    assert peer.shards["s1"]["state"] == ShardState.STABLE
+    assert peer.shards["s1"]["data"] == {"k": "v"}
+
+    server.on_message("coord", CleanupShard(shard_id="s1", epoch=2))
+    assert "s1" not in server.shards
