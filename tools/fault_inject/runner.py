@@ -10,6 +10,7 @@ if str(SRC) not in sys.path:
 from metadata.coordinator import Coordinator
 from shardserver.server import ShardServer
 from sim.harness import Harness
+from metrics.collector import summarize_run
 
 
 def setup_basic_system():
@@ -55,6 +56,13 @@ def run_scenario(name: str):
 
     h.run()
 
+    metrics = summarize_run(
+        coordinator=coord,
+        servers=[a, b],
+        shard_id="s1",
+        scenario_name=name,
+    )
+
     print("\n=== Final Metadata ===")
     print(coord.store.get("s1"))
 
@@ -67,12 +75,68 @@ def run_scenario(name: str):
     print("A:", len(a.event_log))
     print("B:", len(b.event_log))
 
+    print("\n=== Metrics Summary ===")
+    for k, v in metrics.items():
+        print(f"{k}: {v}")
+
+    return metrics
+
+def generate_markdown_table(results):
+    headers = [
+        "Scenario",
+        "Completed",
+        "Stall State",
+        "Final Owner",
+        "Final Epoch",
+        "Final State",
+        "Freeze Duration",
+        "Transfer Duration",
+        "Transfer Ack",
+    ]
+
+    lines = []
+
+    # header
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("|" + "|".join(["---"] * len(headers)) + "|")
+
+    for r in results:
+        row = [
+            r["scenario_name"],
+            "Yes" if r["completed"] else "No",
+            r["stall_state"] or "-",
+            r["final_owner"],
+            str(r["final_epoch"]),
+            r["final_state"],
+            str(r["freeze_duration"]) if r["freeze_duration"] is not None else "-",
+            str(r["transfer_duration"]) if r["transfer_duration"] is not None else "-",
+            str(r["transfer_ack_count"]),
+        ]
+
+        lines.append("| " + " | ".join(row) + " |")
+
+    return "\n".join(lines)
+
+def run_all_scenarios():
+    scenarios = [
+        "false_suspicion_safe_reconfig",
+        "drop_transfer_shard_message",
+        "old_owner_crash_during_freeze",
+        "new_owner_crash_before_transfer_ack",
+    ]
+
+    results = []
+
+    for name in scenarios:
+        print(f"\n===== Running: {name} =====")
+        metrics = run_scenario(name)
+        results.append(metrics)
+
+    print("\n\n=== Markdown Table ===\n")
+    print(generate_markdown_table(results))
 
 if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) != 2:
-        print("Usage: python tools/fault_inject/runner.py <scenario_name>")
-        raise SystemExit(1)
-
-    run_scenario(sys.argv[1])
+    if len(sys.argv) == 2:
+        run_scenario(sys.argv[1])
+    else:
+        run_all_scenarios()

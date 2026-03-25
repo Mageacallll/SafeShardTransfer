@@ -202,6 +202,14 @@ class Coordinator(Process):
             new_epoch=new_epoch,
             state=ShardState.ACTIVATE.value,
         )
+        
+        self.log_event(
+            event="activate_start",
+            shard_id=shard_id,
+            new_owner=new_owner,
+            epoch=new_epoch,
+            state=ShardState.ACTIVATE.value,
+        )
 
         self.send(new_owner, ActivateShard(shard_id=shard_id, epoch=new_epoch))
 
