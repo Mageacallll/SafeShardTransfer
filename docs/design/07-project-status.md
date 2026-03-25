@@ -396,3 +396,110 @@ The repository now contains:
 - reproducible failure scenarios
 
 This provides a stable foundation for deeper evaluation and further design exp
+
+# 13. Experimental Results
+
+We evaluated the protocol under four representative scenarios using the deterministic simulator and fault injection framework.
+
+- 13.1 Summary Table
+| Scenario | Completed | Stall State | Final Owner | Final Epoch | Final State | Freeze Duration | Transfer Duration | Transfer Ack |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| false_suspicion_safe_reconfig | Yes | - | B | 2 | STABLE | 2 | 3 | 1 |
+| drop_transfer_shard_message | No | TRANSFER | A | 1 | TRANSFER | 2 | - | 0 |
+| old_owner_crash_during_freeze | No | FREEZE | A | 1 | FREEZE | - | - | 0 |
+| new_owner_crash_before_transfer_ack | No | TRANSFER | A | 1 | TRANSFER | 2 | - | 0 |
+
+
+Results are generated using the experiment runner and metrics collector
+
+- 13.2 Observations
+Successful Reconfiguration
+
+In the absence of faults (false suspicion scenario):
+
+The protocol completes successfully
+Ownership moves from A → B
+Epoch increases from 1 → 2
+Final state returns to STABLE
+
+This demonstrates that correctness does not depend on accurate failure detection.
+
+Failure Scenarios
+
+Across all failure scenarios:
+
+Reconfiguration does not complete
+Ownership remains with the original node (A)
+Epoch remains unchanged (1)
+No incorrect activation occurs
+
+This confirms that:
+
+The protocol consistently preserves single-owner safety even under failures.
+
+Stall Behavior by Phase
+
+Failures cause the protocol to stall in different phases:
+
+FREEZE stall
+Occurs when the old owner crashes before acknowledging freeze
+→ system cannot proceed to transfer
+TRANSFER stall
+Occurs when:
+transfer message is dropped, or
+new owner crashes before acknowledgment
+→ system cannot commit ownership
+
+This distinction highlights that:
+
+Progress depends on successful completion of each phase and its acknowledgment.
+
+Message-Level Insights
+
+From the metrics:
+
+freeze_ack_count = 0 → no progress beyond FREEZE
+transfer_ack_count = 0 → no ownership commit
+transfer_ack_count = 1 → successful reconfiguration
+
+This shows that:
+
+Acknowledgments are the key drivers of protocol progress.
+
+- 13.3 Safety Analysis
+
+The protocol enforces safety through:
+
+freezing the old owner before transfer
+delaying activation until transfer is acknowledged
+incrementing the epoch only upon ownership commit
+rejecting requests with mismatched epoch or non-STABLE state
+
+As a result:
+
+There is no execution in which two servers simultaneously serve the same shard.
+
+- 13.4 Liveness Analysis
+
+The protocol does not guarantee progress under failures.
+
+Observed limitations:
+
+no retry mechanism for lost messages
+no timeout for stalled phases
+no recovery path for crashed nodes
+
+As a result:
+
+the system may remain indefinitely in FREEZE or TRANSFER
+availability is reduced during reconfiguration
+
+This reflects a deliberate design choice:
+
+The protocol prioritizes safety over availability.
+
+- 13.5 Key Insight
+
+Across all experiments:
+
+The protocol achieves strong safety guarantees by enforcing strict phase ordering and acknowledgment requirements, but this comes at the cost of liveness under partial failures.
