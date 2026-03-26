@@ -1,3 +1,9 @@
+"""
+Simple end-to-end demo of successful shard reassignment.
+
+This script runs the happy-path protocol:
+A -> freeze -> transfer -> activate B -> cleanup A
+"""
 from metadata.coordinator import Coordinator
 from shardserver.server import ShardServer
 from sim.harness import Harness
@@ -29,6 +35,8 @@ def main():
     print("\nFinal server state:")
     print("A shards:", server_a.shards)
     print("B shards:", server_b.shards)
+    print("\nDemo result:")
+    print("Reassignment completed successfully.")
 
 
 if __name__ == "__main__":
