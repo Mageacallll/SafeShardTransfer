@@ -230,6 +230,9 @@ Potential improvements include:
 
 ---
 
+### Note:
+It is also worth mentioning that client workload injection in the simulator is serialized because the current protocol does not attach request IDs to replies, so the client deliberately avoids concurrent outstanding requests.
+
 ## 7. Summary
 
 The current data-plane implementation prioritizes:
@@ -243,3 +246,13 @@ While it omits more advanced features, it provides a clean and safe foundation f
 The design explicitly favors:
 
 > safety and clarity over completeness and performance.
+
+### Client-side Availability Note
+
+We also injected a small client workload during reconfiguration to observe user-visible effects.
+
+These exploratory runs showed that even when the protocol successfully completed, client-observed availability could remain poor if the client continued using stale routing information. In particular, post-reconfiguration requests could still be sent to the old owner and be rejected as missing-shard requests.
+
+This does not indicate a protocol safety failure. Instead, it reflects a limitation of the current client model, which uses only local routing hints and does not query coordinator metadata for route refresh.
+
+For this project, client routing recovery is treated as secondary to the core shard reassignment mechanism and is left as future work.

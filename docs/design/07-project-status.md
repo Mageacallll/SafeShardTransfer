@@ -344,11 +344,12 @@ Several areas remain to be explored.
 
 ### Metrics and Observability
 
-Planned metrics include:
+Implemented metrics include:
 
-- freeze duration
-- reassignment completion time
-- rejected request counts
+freeze duration
+reassignment completion time
+transfer acknowledgment counts
+client rejection counts during reconfiguration
 
 ### Protocol Refinement
 
@@ -503,3 +504,81 @@ The protocol prioritizes safety over availability.
 Across all experiments:
 
 The protocol achieves strong safety guarantees by enforcing strict phase ordering and acknowledgment requirements, but this comes at the cost of liveness under partial failures.
+
+# 14. Client-Side Workload Observation
+
+We extended the experiment runner to include a simple client workload during reconfiguration.
+
+The client issues a small number of GET and PUT requests:
+
+before reconfiguration
+during FREEZE and TRANSFER
+after reconfiguration completes
+
+The client implements:
+
+local shard routing hints
+retry on:
+reconfiguring
+wrong_owner_or_missing_shard
+stale_or_wrong_epoch
+a single in-flight request constraint
+- 14.1 Observed Behavior
+
+In the successful reconfiguration scenario:
+
+pre-reconfiguration requests succeed on the old owner (A)
+requests during FREEZE and TRANSFER are rejected
+after reconfiguration completes, some client requests still fail
+
+This occurs even though:
+
+the protocol has successfully transferred ownership to B
+the system is in a correct STABLE state
+- 14.2 Root Cause
+
+The client maintains only a local routing hint and does not query the coordinator for updated ownership.
+
+As a result:
+
+after reassignment, the client may continue sending requests to the old owner (A)
+the old owner has already cleaned up the shard
+requests are rejected with wrong_owner_or_missing_shard
+
+This leads to elevated counts of client-visible failures, even though the system is correct.
+
+- 14.3 Interpretation
+
+This observation highlights an important distinction:
+
+Protocol correctness does not guarantee immediate client-perceived availability.
+
+Specifically:
+
+the protocol ensures safe ownership transfer
+but client availability depends on timely routing updates
+- 14.4 Design Limitation (Intentional)
+
+The current client design intentionally:
+
+does not query the coordinator
+uses only local routing hints
+supports only one in-flight request
+
+These constraints were chosen to:
+
+keep the simulation simple and deterministic
+avoid extending the protocol with request identifiers or routing APIs
+14.5 Conclusion
+
+The client workload experiment confirms that:
+
+the protocol behaves correctly under reconfiguration
+temporary availability loss occurs during transition phases
+stale client routing can prolong perceived unavailability
+
+Client-side routing recovery is therefore:
+
+an important but orthogonal concern to the shard reassignment protocol.
+
+This is left as future work.
