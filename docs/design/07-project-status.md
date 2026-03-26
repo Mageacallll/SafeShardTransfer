@@ -56,7 +56,8 @@ src/
 │ └── client.py
 │
 └── sim/
-├── harness.py
+│ └── harness.py
+│
 └── demo_reassign.py
 
 
@@ -344,12 +345,14 @@ Several areas remain to be explored.
 
 ### Metrics and Observability
 
-Implemented metrics include:
+The following metrics have been implemented:
 
-freeze duration
-reassignment completion time
-transfer acknowledgment counts
-client rejection counts during reconfiguration
+- freeze duration
+- reassignment completion time
+- transfer acknowledgment counts
+- client rejection counts during reconfiguration
+
+These metrics are collected through the experiment runner and summarized after each scenario execution.
 
 ### Protocol Refinement
 
@@ -383,11 +386,10 @@ The next stage of the project will focus on **systematic experimentation and ana
 
 # 12. Repository State
 
-All current tests pass.
 
+All tests pass:
 
-pytest
-17 passed
+pytest → 47 passed in 0.21s
 
 
 The repository now contains:
@@ -402,7 +404,8 @@ This provides a stable foundation for deeper evaluation and further design exp
 
 We evaluated the protocol under four representative scenarios using the deterministic simulator and fault injection framework.
 
-- 13.1 Summary Table
+## 13.1 Summary Table
+
 | Scenario | Completed | Stall State | Final Owner | Final Epoch | Final State | Freeze Duration | Transfer Duration | Transfer Ack |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | false_suspicion_safe_reconfig | Yes | - | B | 2 | STABLE | 2 | 3 | 1 |
@@ -410,175 +413,173 @@ We evaluated the protocol under four representative scenarios using the determin
 | old_owner_crash_during_freeze | No | FREEZE | A | 1 | FREEZE | - | - | 0 |
 | new_owner_crash_before_transfer_ack | No | TRANSFER | A | 1 | TRANSFER | 2 | - | 0 |
 
+Results are generated using the experiment runner and metrics collector.
 
-Results are generated using the experiment runner and metrics collector
+---
 
-- 13.2 Observations
-Successful Reconfiguration
+## 13.2 Observations
+
+### Successful Reconfiguration
 
 In the absence of faults (false suspicion scenario):
 
-The protocol completes successfully
-Ownership moves from A → B
-Epoch increases from 1 → 2
-Final state returns to STABLE
+- the protocol completes successfully
+- ownership moves from A → B
+- epoch increases from 1 → 2
+- final state returns to `STABLE`
 
 This demonstrates that correctness does not depend on accurate failure detection.
 
-Failure Scenarios
+---
+
+### Failure Scenarios
 
 Across all failure scenarios:
 
-Reconfiguration does not complete
-Ownership remains with the original node (A)
-Epoch remains unchanged (1)
-No incorrect activation occurs
+- reconfiguration does not complete
+- ownership remains with the original node (A)
+- epoch remains unchanged (1)
+- no incorrect activation occurs
 
 This confirms that:
 
-The protocol consistently preserves single-owner safety even under failures.
+> The protocol consistently preserves single-owner safety even under failures.
 
-Stall Behavior by Phase
+---
+
+### Stall Behavior by Phase
 
 Failures cause the protocol to stall in different phases:
 
-FREEZE stall
-Occurs when the old owner crashes before acknowledging freeze
-→ system cannot proceed to transfer
-TRANSFER stall
-Occurs when:
-transfer message is dropped, or
-new owner crashes before acknowledgment
-→ system cannot commit ownership
+- **FREEZE stall**  
+  Occurs when the old owner crashes before acknowledging freeze  
+  → system cannot proceed to transfer  
 
-This distinction highlights that:
-
-Progress depends on successful completion of each phase and its acknowledgment.
-
-Message-Level Insights
-
-From the metrics:
-
-freeze_ack_count = 0 → no progress beyond FREEZE
-transfer_ack_count = 0 → no ownership commit
-transfer_ack_count = 1 → successful reconfiguration
+- **TRANSFER stall**  
+  Occurs when:
+  - transfer message is dropped, or
+  - new owner crashes before acknowledgment  
+  → system cannot commit ownership  
 
 This shows that:
 
-Acknowledgments are the key drivers of protocol progress.
+> Progress depends on successful completion of each phase and its acknowledgment.
 
-- 13.3 Safety Analysis
+---
+
+### Message-Level Insights
+
+From the metrics:
+
+- `freeze_ack_count = 0` → no progress beyond FREEZE  
+- `transfer_ack_count = 0` → no ownership commit  
+- `transfer_ack_count = 1` → successful reconfiguration  
+
+This indicates that:
+
+> Acknowledgments are the key drivers of protocol progress.
+
+---
+
+## 13.3 Safety Analysis
 
 The protocol enforces safety through:
 
-freezing the old owner before transfer
-delaying activation until transfer is acknowledged
-incrementing the epoch only upon ownership commit
-rejecting requests with mismatched epoch or non-STABLE state
+- freezing the old owner before transfer
+- delaying activation until transfer is acknowledged
+- incrementing the epoch only upon ownership commit
+- rejecting requests with mismatched epoch or non-`STABLE` state
 
 As a result:
 
-There is no execution in which two servers simultaneously serve the same shard.
+> There is no execution in which two servers simultaneously serve the same shard.
 
-- 13.4 Liveness Analysis
+---
+
+## 13.4 Liveness Analysis
 
 The protocol does not guarantee progress under failures.
 
 Observed limitations:
 
-no retry mechanism for lost messages
-no timeout for stalled phases
-no recovery path for crashed nodes
+- no retry mechanism for lost messages
+- no timeout for stalled phases
+- no recovery path for crashed nodes
 
 As a result:
 
-the system may remain indefinitely in FREEZE or TRANSFER
-availability is reduced during reconfiguration
+- the system may remain indefinitely in `FREEZE` or `TRANSFER`
+- availability is reduced during reconfiguration
 
 This reflects a deliberate design choice:
 
-The protocol prioritizes safety over availability.
+> The protocol prioritizes safety over availability.
 
-- 13.5 Key Insight
+---
+
+## 13.5 Key Insight
 
 Across all experiments:
 
-The protocol achieves strong safety guarantees by enforcing strict phase ordering and acknowledgment requirements, but this comes at the cost of liveness under partial failures.
+> The protocol achieves strong safety guarantees by enforcing strict phase ordering and acknowledgment requirements, but this comes at the cost of liveness under partial failures.
 
 # 14. Client-Side Workload Observation
 
 We extended the experiment runner to include a simple client workload during reconfiguration.
 
-The client issues a small number of GET and PUT requests:
+The client issues a small number of `GET` and `PUT` requests:
+- before reconfiguration
+- during `FREEZE` and `TRANSFER`
+- after reconfiguration completes
 
-before reconfiguration
-during FREEZE and TRANSFER
-after reconfiguration completes
+---
 
-The client implements:
-
-local shard routing hints
-retry on:
-reconfiguring
-wrong_owner_or_missing_shard
-stale_or_wrong_epoch
-a single in-flight request constraint
-- 14.1 Observed Behavior
+## 14.1 Observed Behavior
 
 In the successful reconfiguration scenario:
 
-pre-reconfiguration requests succeed on the old owner (A)
-requests during FREEZE and TRANSFER are rejected
-after reconfiguration completes, some client requests still fail
+- pre-reconfiguration requests succeed on the old owner (A)
+- requests during `FREEZE` and `TRANSFER` are rejected
+- after reconfiguration completes, some client requests still fail
 
 This occurs even though:
+- the protocol has successfully transferred ownership to B
+- the system is in a correct `STABLE` state
 
-the protocol has successfully transferred ownership to B
-the system is in a correct STABLE state
-- 14.2 Root Cause
+---
+
+## 14.2 Root Cause
 
 The client maintains only a local routing hint and does not query the coordinator for updated ownership.
 
 As a result:
 
-after reassignment, the client may continue sending requests to the old owner (A)
-the old owner has already cleaned up the shard
-requests are rejected with wrong_owner_or_missing_shard
+- after reassignment, the client may continue sending requests to the old owner (A)
+- the old owner has already cleaned up the shard
+- requests are rejected with `wrong_owner_or_missing_shard`
 
-This leads to elevated counts of client-visible failures, even though the system is correct.
+---
 
-- 14.3 Interpretation
+## 14.3 Interpretation
 
-This observation highlights an important distinction:
+This highlights an important distinction:
 
-Protocol correctness does not guarantee immediate client-perceived availability.
+> Protocol correctness does not guarantee immediate client-perceived availability.
 
-Specifically:
+---
 
-the protocol ensures safe ownership transfer
-but client availability depends on timely routing updates
-- 14.4 Design Limitation (Intentional)
+## 14.4 Design Limitation
 
-The current client design intentionally:
+The current client:
 
-does not query the coordinator
-uses only local routing hints
-supports only one in-flight request
+- uses local routing hints only
+- does not query the coordinator
+- supports only one in-flight request
 
-These constraints were chosen to:
+These constraints simplify the simulator but limit routing recovery.
 
-keep the simulation simple and deterministic
-avoid extending the protocol with request identifiers or routing APIs
-14.5 Conclusion
+---
 
-The client workload experiment confirms that:
+## 14.5 Conclusion
 
-the protocol behaves correctly under reconfiguration
-temporary availability loss occurs during transition phases
-stale client routing can prolong perceived unavailability
-
-Client-side routing recovery is therefore:
-
-an important but orthogonal concern to the shard reassignment protocol.
-
-This is left as future work.
+Client-side routing recovery is an important but orthogonal concern to shard reassignment correctness, and is left as future work.

@@ -44,7 +44,7 @@ scenarios:
         epoch: 1
 
   - name: new_owner_crash_before_transfer_ack
-    description: Crash the new owner before it can receive TransferShard and ack.
+    description: Crash the new owner before TransferShard can be processed and acknowledged.
     setup:
       shard_id: s1
       initial_owner: A
