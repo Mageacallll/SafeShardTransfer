@@ -7,6 +7,27 @@ The goal of this project is to design and experimentally evaluate a protocol for
 
 ---
 
+# 0. Update (March 26, 2026)
+
+The implementation has moved beyond the initial safety-only checkpoint. The current code now includes:
+
+- per-link unreliable network controls (drop, delay, reorder, duplicate, partition)
+- coordinator timeout framework with exponential-backoff retries
+- timeout/crash-triggered abort path returning metadata to `STABLE`
+- crash notifications and recovery resynchronization (`on_node_crash` / `on_node_recover`)
+- server-side client request deduplication via `request_id`
+- harness failure scheduling and additional cascading failure scenarios
+
+Current validation status:
+
+- safety invariants remain intact under noisy network and crash scenarios
+- liveness is improved: stalled transitions now converge by completion or safe abort
+- full automated test suite currently passes (`69 passed`)
+
+Note: Sections below include historical observations from the earlier safety-only phase and should be interpreted as baseline results.
+
+---
+
 # 1. Project Goal
 
 The project investigates the safety of shard reassignment in distributed systems where:

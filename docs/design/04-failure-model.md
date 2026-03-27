@@ -14,12 +14,13 @@ A crashed process:
 
 - stops executing
 - sends no further messages
-- does not recover during the experiment (MVP assumption)
+- may recover later in extended experiments via harness-triggered recovery
 
 Implications:
 
 - shard state hosted by a crashed owner may become temporarily unavailable
 - ongoing shard transfers may be interrupted
+- recovery requires resynchronization with coordinator epoch/state
 
 The protocol must ensure that no other process begins serving the shard unless the configuration has been safely updated.
 
@@ -65,8 +66,9 @@ The shard owner may crash before acknowledging the freeze request.
 
 Result:
 
-- the coordinator may timeout and continue the protocol
-- the shard remains frozen because the crashed process cannot serve requests
+- the coordinator retries `FreezeShard` with backoff while timeout budget remains
+- when retries are exhausted, coordinator aborts reconfiguration and returns metadata to `STABLE`
+- if the old owner later recovers, coordinator sends resync abort state at current epoch
 
 ---
 
@@ -76,8 +78,9 @@ The old owner may crash during state transfer.
 
 Result:
 
-- the destination process may receive incomplete state
-- the coordinator may abort or retry the reassignment
+- the coordinator retries `BeginTransfer` with backoff while timeout budget remains
+- if retries are exhausted or a participant crash is detected, coordinator aborts reconfiguration
+- old owner remains authoritative; new owner never activates without acknowledged transfer
 
 The system must ensure that the shard is not activated until a complete transfer has been confirmed.
 
@@ -96,7 +99,7 @@ Result:
 
 ## 4.5 Safety vs Liveness
 
-The protocol prioritizes **safety** over liveness.
+The protocol prioritizes **safety** while adding bounded recovery for liveness.
 
 Safety guarantees must hold even under arbitrary failures.
 
@@ -107,4 +110,9 @@ Liveness is guaranteed only under **stabilizing conditions**, meaning:
 - at least one process capable of hosting the shard is available
 - the network eventually delivers messages
 
-Under these conditions, any initiated shard reassignment will eventually complete and the shard will return to the `STABLE` state.
+Under these conditions, any initiated shard reassignment will eventually either:
+
+- complete (`reassign_complete`), or
+- abort safely (`reassign_abort`) and return metadata to `STABLE`.
+
+Both outcomes preserve single-owner safety and avoid indefinite coordinator stalls.
