@@ -129,16 +129,16 @@ There is no point in time where two servers are allowed to serve the same shard.
 
 Answer
 
-Liveness fails because the protocol requires explicit acknowledgments at each stage:
+Liveness is limited because the protocol still requires explicit acknowledgments at each stage:
 
 FreezeAck must be received to proceed
 TransferAck must be received to commit ownership
 
 If messages are dropped or nodes crash:
 
-the coordinator cannot advance
-the system remains stuck in FREEZE or TRANSFER
+the coordinator retries while timeout budget remains
+the attempt may abort safely if retries are exhausted or a participant crash is detected
 
 Key idea
 
-The protocol prioritizes safety over availability.
+The protocol prioritizes safety, and now converges by either completion or safe abort rather than indefinite stall.

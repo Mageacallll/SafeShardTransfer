@@ -2,6 +2,12 @@
 
 This document summarizes early adversarial experiments conducted on the freeze-based shard reassignment protocol. The goal of these experiments is to observe how the system behaves under message loss, node crashes, and false failure suspicions.
 
+Note: this W08 report captures an early subset (4 scenarios). The current runner in `tools/fault_inject/scenarios.yaml` additionally covers:
+
+- `cascading_drop_then_old_owner_crash`
+- `partition_then_recover`
+- `reorder_and_duplicate_transfer_path`
+
 All experiments were executed using the deterministic simulator and the manual scenario runner:
 
 python tools/fault_inject/runner.py <scenario_name>

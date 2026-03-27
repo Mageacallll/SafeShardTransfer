@@ -60,6 +60,9 @@ Assumptions:
 | drop_transfer_shard_message | transfer message is dropped |
 | old_owner_crash_during_freeze | old owner crashes before freeze completes |
 | new_owner_crash_before_transfer_ack | new owner crashes during transfer |
+| cascading_drop_then_old_owner_crash | transfer drop plus old owner crash in-flight |
+| partition_then_recover | temporary partition between coordinator and old owner |
+| reorder_and_duplicate_transfer_path | transfer-path reordering and duplication noise |
 
 ---
 
@@ -68,9 +71,12 @@ Assumptions:
 | Scenario | Completed | Stall State | Final Owner | Final Epoch | Final State | Freeze Duration | Transfer Duration | Transfer Ack |
 |---|---|---|---|---|---|---|---|---|
 | false_suspicion_safe_reconfig | Yes | - | B | 2 | STABLE | 2 | 3 | 1 |
-| drop_transfer_shard_message | No | TRANSFER | A | 1 | TRANSFER | 2 | - | 0 |
-| old_owner_crash_during_freeze | No | FREEZE | A | 1 | FREEZE | - | - | 0 |
-| new_owner_crash_before_transfer_ack | No | TRANSFER | A | 1 | TRANSFER | 2 | - | 0 |
+| drop_transfer_shard_message | No (aborted_safe) | - | A | 2 | STABLE | 2 | - | 0 |
+| old_owner_crash_during_freeze | No (aborted_safe) | - | A | 2 | STABLE | - | - | 0 |
+| new_owner_crash_before_transfer_ack | No (aborted_safe) | - | A | 2 | STABLE | 2 | - | 0 |
+| cascading_drop_then_old_owner_crash | No (aborted_safe) | - | A | 2 | STABLE | 2 | - | 0 |
+| partition_then_recover | Yes | - | B | 2 | STABLE | 10 | 3 | 1 |
+| reorder_and_duplicate_transfer_path | Yes | - | B | 2 | STABLE | 2 | 3 | 1 |
 
 Results are generated directly from the experiment runner :contentReference[oaicite:1]{index=1}.
 
@@ -99,20 +105,21 @@ Key mechanisms:
 
 ## 6. Liveness Analysis
 
-The protocol does not guarantee progress under failures.
+The current protocol applies timeout-driven retries and bounded aborts, so the tested scenarios no longer remain indefinitely stalled.
 
 Observed behavior:
 
-- FREEZE stall → old owner crash prevents acknowledgment
-- TRANSFER stall → message loss or new owner crash prevents commit
+- completion under false suspicion, temporary partition, and reorder/duplicate noise
+- safe abort under persistent transfer loss or participant crashes
 
 This shows:
 
-> Protocol progress depends on successful completion of each phase.
+> Protocol progress now converges to either completion or explicit safe abort.
 
-Without retries or timeouts:
+With bounded retries and abort handling:
 
-- the system may remain indefinitely in `FREEZE` or `TRANSFER`
+- metadata returns to `STABLE` on failed attempts
+- ownership remains unchanged on abort (`A`, epoch advanced to 2)
 
 ---
 

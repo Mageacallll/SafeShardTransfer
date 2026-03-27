@@ -44,7 +44,7 @@ Progress depends on acknowledgments:
 
 Under message loss or crashes:
 
-> **The system cannot make progress.**
+> **The system may fail to complete reassignment and instead converge by safe abort.**
 
 ---
 

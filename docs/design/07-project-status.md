@@ -278,12 +278,12 @@ new owner crashes before TransferAck
 
 Result:
 
-- coordinator remains in `TRANSFER`
-- reassignment stalls
+- coordinator detects failure and aborts the attempt
+- metadata is restored to `STABLE`
 
 Observation:
 
-Safety preserved, but liveness fails.
+Safety preserved, and failed attempts converge by safe abort.
 
 ---
 
@@ -314,12 +314,12 @@ Across all experiments:
 
 | Scenario | Safety | Liveness |
 |--------|--------|--------|
-Dropped transfer | preserved | stalled |
-Old owner crash | preserved | stalled |
-New owner crash | preserved | stalled |
+Dropped transfer | preserved | aborted_safe |
+Old owner crash | preserved | aborted_safe |
+New owner crash | preserved | aborted_safe |
 False suspicion | preserved | completes |
 
-The protocol **successfully enforces single-owner safety**, but **does not guarantee progress under partial failures**.
+The protocol **successfully enforces single-owner safety**, and **uses bounded retries/timeouts to converge by completion or safe abort under partial failures**.
 
 This is a direct consequence of the design decision to require explicit acknowledgments before activating the new owner.
 
@@ -423,16 +423,19 @@ This provides a stable foundation for deeper evaluation and further design exp
 
 # 13. Experimental Results
 
-We evaluated the protocol under four representative scenarios using the deterministic simulator and fault injection framework.
+We evaluated the protocol under seven representative scenarios using the deterministic simulator and fault injection framework.
 
 ## 13.1 Summary Table
 
 | Scenario | Completed | Stall State | Final Owner | Final Epoch | Final State | Freeze Duration | Transfer Duration | Transfer Ack |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | false_suspicion_safe_reconfig | Yes | - | B | 2 | STABLE | 2 | 3 | 1 |
-| drop_transfer_shard_message | No | TRANSFER | A | 1 | TRANSFER | 2 | - | 0 |
-| old_owner_crash_during_freeze | No | FREEZE | A | 1 | FREEZE | - | - | 0 |
-| new_owner_crash_before_transfer_ack | No | TRANSFER | A | 1 | TRANSFER | 2 | - | 0 |
+| drop_transfer_shard_message | No (aborted_safe) | - | A | 2 | STABLE | 2 | - | 0 |
+| old_owner_crash_during_freeze | No (aborted_safe) | - | A | 2 | STABLE | - | - | 0 |
+| new_owner_crash_before_transfer_ack | No (aborted_safe) | - | A | 2 | STABLE | 2 | - | 0 |
+| cascading_drop_then_old_owner_crash | No (aborted_safe) | - | A | 2 | STABLE | 2 | - | 0 |
+| partition_then_recover | Yes | - | B | 2 | STABLE | 10 | 3 | 1 |
+| reorder_and_duplicate_transfer_path | Yes | - | B | 2 | STABLE | 2 | 3 | 1 |
 
 Results are generated using the experiment runner and metrics collector.
 
@@ -457,9 +460,10 @@ This demonstrates that correctness does not depend on accurate failure detection
 
 Across all failure scenarios:
 
-- reconfiguration does not complete
-- ownership remains with the original node (A)
-- epoch remains unchanged (1)
+- completion is possible under partition healing and link noise
+- failed attempts are safely aborted when retries are exhausted or crashes are detected
+- ownership remains with the original node (A) on abort paths
+- epoch advances to abort epoch (2) while metadata returns to `STABLE`
 - no incorrect activation occurs
 
 This confirms that:
@@ -519,17 +523,17 @@ As a result:
 
 ## 13.4 Liveness Analysis
 
-The protocol does not guarantee progress under failures.
+The protocol does not guarantee completion under failures, but it avoids indefinite coordinator-side stalls.
 
-Observed limitations:
+Observed behavior:
 
-- no retry mechanism for lost messages
-- no timeout for stalled phases
-- no recovery path for crashed nodes
+- retries and phase timeouts drive retransmission while budget remains
+- crash detection or timeout exhaustion triggers explicit abort
+- metadata is returned to `STABLE` on aborted attempts
 
 As a result:
 
-- the system may remain indefinitely in `FREEZE` or `TRANSFER`
+- reconfiguration converges to completion or safe abort
 - availability is reduced during reconfiguration
 
 This reflects a deliberate design choice:
