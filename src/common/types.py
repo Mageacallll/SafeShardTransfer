@@ -18,6 +18,7 @@ from typing import Any, Dict
 ShardId = str
 NodeId = str
 Epoch = int
+AttemptId = int
 Key = str
 Value = Any
 
@@ -63,6 +64,7 @@ class ClientReply:
 class FreezeShard:
     shard_id: ShardId
     epoch: Epoch
+    attempt_id: AttemptId
 
 
 @dataclass
@@ -70,24 +72,28 @@ class BeginTransfer:
     shard_id: ShardId
     epoch: Epoch
     target: NodeId
+    attempt_id: AttemptId
 
 
 @dataclass
 class ActivateShard:
     shard_id: ShardId
     epoch: Epoch
+    attempt_id: AttemptId
 
 
 @dataclass
 class CleanupShard:
     shard_id: ShardId
     epoch: Epoch
+    attempt_id: AttemptId
 
 
 @dataclass
 class AbortReconfiguration:
     shard_id: ShardId
     epoch: Epoch
+    attempt_id: AttemptId | None
     reason: str | None = None
 
 
@@ -99,12 +105,14 @@ class AbortReconfiguration:
 class FreezeAck:
     shard_id: ShardId
     epoch: Epoch
+    attempt_id: AttemptId
 
 
 @dataclass
 class TransferAck:
     shard_id: ShardId
     epoch: Epoch
+    attempt_id: AttemptId
 
 
 # -----------------------------
@@ -115,6 +123,7 @@ class TransferAck:
 class TransferShard:
     shard_id: ShardId
     epoch: Epoch
+    attempt_id: AttemptId
     data: Dict[Key, Value]
 
 

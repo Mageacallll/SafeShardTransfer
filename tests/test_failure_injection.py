@@ -28,11 +28,6 @@ def setup_basic_system(*, freeze_timeout=None, transfer_timeout=None, max_retrie
 
 
 def test_drop_transfer_shard_message():
-    """
-    With transfer timeout/retry enabled:
-    If TransferShard is dropped, reconfiguration should safely abort
-    back to STABLE rather than remain stuck in TRANSFER.
-    """
     h, coord, a, b = setup_basic_system(transfer_timeout=2, max_retries=1)
 
     def drop_transfer(src, dst, msg):
@@ -47,6 +42,7 @@ def test_drop_transfer_shard_message():
     assert meta["state"].value == "STABLE"
     assert meta["owner"] == "A"
     assert meta["epoch"] == 2
+    assert meta["attempt_id"] is None
     assert_at_most_one_stable_holder("s1", a, b)
 
     names = [e["event"] for e in coord.event_log] + [e["event"] for e in a.event_log] + [e["event"] for e in b.event_log]
@@ -70,6 +66,7 @@ def test_old_owner_crash_during_freeze():
     assert meta["state"].value == "STABLE"
     assert meta["owner"] == "A"
     assert meta["epoch"] == 2
+    assert meta["attempt_id"] is None
     assert_at_most_one_stable_holder("s1", a, b)
 
     names = [e["event"] for e in coord.event_log]
@@ -88,6 +85,7 @@ def test_new_owner_crash_before_transfer_ack():
     assert meta["state"].value == "STABLE"
     assert meta["owner"] == "A"
     assert meta["epoch"] == 2
+    assert meta["attempt_id"] is None
     assert_at_most_one_stable_holder("s1", a, b)
 
     names = [e["event"] for e in coord.event_log]
@@ -105,6 +103,7 @@ def test_false_suspicion_safe_reconfig():
     assert meta["state"].value == "STABLE"
     assert meta["owner"] == "B"
     assert meta["epoch"] == 2
+    assert meta["attempt_id"] is None
     assert_at_most_one_stable_holder("s1", a, b)
 
     names = [e["event"] for e in coord.event_log]
@@ -127,6 +126,7 @@ def test_cascading_drop_then_old_owner_crash():
     assert meta["state"].value == "STABLE"
     assert meta["owner"] == "A"
     assert meta["epoch"] == 2
+    assert meta["attempt_id"] is None
     assert_at_most_one_stable_holder("s1", a, b)
 
     names = [e["event"] for e in coord.event_log]
@@ -163,6 +163,7 @@ def test_partition_then_recover():
     assert meta["state"].value == "STABLE"
     assert meta["owner"] == "B"
     assert meta["epoch"] == 2
+    assert meta["attempt_id"] is None
     assert_at_most_one_stable_holder("s1", a, b)
 
     names = [e["event"] for e in coord.event_log]
@@ -196,4 +197,5 @@ def test_reorder_and_duplicate_transfer_path():
     assert meta["state"].value == "STABLE"
     assert meta["owner"] == "B"
     assert meta["epoch"] == 2
+    assert meta["attempt_id"] is None
     assert_at_most_one_stable_holder("s1", a, b)

@@ -11,6 +11,7 @@ class MetadataStore:
             "epoch": epoch,
             "state": ShardState.STABLE,
             "target": None,
+            "attempt_id": None,
         }
 
     def get(self, shard_id: str):

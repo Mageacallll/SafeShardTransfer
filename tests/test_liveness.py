@@ -37,6 +37,7 @@ def test_liveness_happy_path_completes_within_bound():
     assert meta["state"].value == "STABLE"
     assert meta["owner"] == "B"
     assert meta["epoch"] == 2
+    assert meta["attempt_id"] is None
     assert h.loop.time <= 15
     assert_at_most_one_stable_holder("s1", a, b)
 
@@ -54,6 +55,7 @@ def test_liveness_drop_transfer_eventually_aborts_stable():
     meta = coord.store.get("s1")
     assert meta["state"].value == "STABLE"
     assert meta["owner"] == "A"
+    assert meta["attempt_id"] is None
     assert h.loop.time <= 25
     assert_at_most_one_stable_holder("s1", a, b)
 
@@ -70,6 +72,7 @@ def test_liveness_old_owner_crash_eventually_stable():
     assert meta["state"].value == "STABLE"
     assert meta["owner"] == "A"
     assert meta["epoch"] == 2
+    assert meta["attempt_id"] is None
     assert h.loop.time <= 25
     assert_at_most_one_stable_holder("s1", a, b)
 
@@ -77,8 +80,6 @@ def test_liveness_old_owner_crash_eventually_stable():
 def test_liveness_partition_heals_and_reassign_completes():
     h, coord, a, b = setup_system(freeze_timeout=2, max_retries=3)
 
-    # Partition coordinator <-> old owner long enough to force retries,
-    # then heal and allow progress.
     h.set_link_config(
         LinkConfig(
             source="coord",
@@ -105,5 +106,6 @@ def test_liveness_partition_heals_and_reassign_completes():
     assert meta["state"].value == "STABLE"
     assert meta["owner"] == "B"
     assert meta["epoch"] == 2
+    assert meta["attempt_id"] is None
     assert h.loop.time <= 35
     assert_at_most_one_stable_holder("s1", a, b)

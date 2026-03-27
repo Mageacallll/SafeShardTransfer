@@ -42,8 +42,10 @@ class Coordinator(Process):
         self.retry_backoff = retry_backoff
 
         # timeout tokens prevent stale callbacks from mutating state
-        self._phase_tokens: dict[tuple[str, str], int] = {}
-        self._phase_retry_counts: dict[tuple[str, str], int] = {}
+        self._phase_tokens: dict[tuple[str, str, int], int] = {}
+        self._phase_retry_counts: dict[tuple[str, str, int], int] = {}
+
+        self._next_attempt_id = 1
 
     # --------------------------------------------------
     # Public API
@@ -54,6 +56,11 @@ class Coordinator(Process):
         Initialize a shard in STABLE state.
         """
         self.store.init_shard(shard_id=shard_id, owner=owner, epoch=epoch)
+        self.store.update(
+            shard_id,
+            target=None,
+            attempt_id=None,
+        )
 
     def reassign(self, shard_id: str, new_owner: str):
         """
@@ -72,10 +79,14 @@ class Coordinator(Process):
         if old_owner == new_owner:
             raise ValueError(f"Shard {shard_id} is already owned by {new_owner}.")
 
+        attempt_id = self._next_attempt_id
+        self._next_attempt_id += 1
+
         self.store.update(
             shard_id,
             state=ShardState.FREEZE,
             target=new_owner,
+            attempt_id=attempt_id,
         )
 
         self.log_event(
@@ -84,12 +95,20 @@ class Coordinator(Process):
             old_owner=old_owner,
             new_owner=new_owner,
             epoch=current_epoch,
+            attempt_id=attempt_id,
             state=ShardState.FREEZE.value,
         )
 
-        self.send(old_owner, FreezeShard(shard_id=shard_id, epoch=current_epoch))
+        self.send(
+            old_owner,
+            FreezeShard(
+                shard_id=shard_id,
+                epoch=current_epoch,
+                attempt_id=attempt_id,
+            ),
+        )
 
-        self._start_phase_timer(shard_id, ShardState.FREEZE)
+        self._start_phase_timer(shard_id, ShardState.FREEZE, attempt_id)
 
     def on_node_crash(self, node_id: str):
         for shard_id, shard in list(self.store.shards.items()):
@@ -101,6 +120,7 @@ class Coordinator(Process):
                     event="participant_crash_detected",
                     shard_id=shard_id,
                     crashed_node=node_id,
+                    attempt_id=shard.get("attempt_id"),
                     state=shard["state"].value,
                 )
                 self._abort_reconfiguration(
@@ -124,6 +144,7 @@ class Coordinator(Process):
                 AbortReconfiguration(
                     shard_id=shard_id,
                     epoch=shard["epoch"],
+                    attempt_id=shard.get("attempt_id"),
                     reason="resync_on_recover",
                 ),
             )
@@ -162,6 +183,7 @@ class Coordinator(Process):
                 event="unexpected_freeze_ack",
                 shard_id=shard_id,
                 src=src,
+                attempt_id=message.attempt_id,
                 state=shard["state"].value,
             )
             return
@@ -171,6 +193,7 @@ class Coordinator(Process):
                 event="freeze_ack_wrong_owner",
                 shard_id=shard_id,
                 src=src,
+                attempt_id=message.attempt_id,
                 expected_owner=shard["owner"],
             )
             return
@@ -180,12 +203,25 @@ class Coordinator(Process):
                 event="freeze_ack_stale_epoch",
                 shard_id=shard_id,
                 src=src,
+                attempt_id=message.attempt_id,
                 msg_epoch=message.epoch,
                 current_epoch=shard["epoch"],
             )
             return
 
-        self._cancel_phase_timer(shard_id, ShardState.FREEZE)
+        if message.attempt_id != shard.get("attempt_id"):
+            self.log_event(
+                event="freeze_ack_attempt_mismatch",
+                shard_id=shard_id,
+                src=src,
+                msg_attempt_id=message.attempt_id,
+                current_attempt_id=shard.get("attempt_id"),
+            )
+            return
+
+        attempt_id = shard["attempt_id"]
+
+        self._cancel_phase_timer(shard_id, ShardState.FREEZE, attempt_id)
 
         self.store.update(shard_id, state=ShardState.TRANSFER)
 
@@ -195,6 +231,7 @@ class Coordinator(Process):
             old_owner=shard["owner"],
             new_owner=shard["target"],
             epoch=shard["epoch"],
+            attempt_id=attempt_id,
             state=ShardState.TRANSFER.value,
         )
 
@@ -204,10 +241,11 @@ class Coordinator(Process):
                 shard_id=shard_id,
                 epoch=shard["epoch"],
                 target=shard["target"],
+                attempt_id=attempt_id,
             ),
         )
 
-        self._start_phase_timer(shard_id, ShardState.TRANSFER)
+        self._start_phase_timer(shard_id, ShardState.TRANSFER, attempt_id)
 
     def _handle_transfer_ack(self, src: str, message: TransferAck):
         shard_id = message.shard_id
@@ -218,6 +256,7 @@ class Coordinator(Process):
                 event="unexpected_transfer_ack",
                 shard_id=shard_id,
                 src=src,
+                attempt_id=message.attempt_id,
                 state=shard["state"].value,
             )
             return
@@ -227,6 +266,7 @@ class Coordinator(Process):
                 event="transfer_ack_wrong_target",
                 shard_id=shard_id,
                 src=src,
+                attempt_id=message.attempt_id,
                 expected_target=shard["target"],
             )
             return
@@ -236,17 +276,29 @@ class Coordinator(Process):
                 event="transfer_ack_stale_epoch",
                 shard_id=shard_id,
                 src=src,
+                attempt_id=message.attempt_id,
                 msg_epoch=message.epoch,
                 current_epoch=shard["epoch"],
             )
             return
 
-        self._cancel_phase_timer(shard_id, ShardState.TRANSFER)
+        if message.attempt_id != shard.get("attempt_id"):
+            self.log_event(
+                event="transfer_ack_attempt_mismatch",
+                shard_id=shard_id,
+                src=src,
+                msg_attempt_id=message.attempt_id,
+                current_attempt_id=shard.get("attempt_id"),
+            )
+            return
 
         old_owner = shard["owner"]
         new_owner = shard["target"]
         old_epoch = shard["epoch"]
+        attempt_id = shard["attempt_id"]
         new_epoch = old_epoch + 1
+
+        self._cancel_phase_timer(shard_id, ShardState.TRANSFER, attempt_id)
 
         self.store.update(
             shard_id,
@@ -262,18 +314,18 @@ class Coordinator(Process):
             new_owner=new_owner,
             old_epoch=old_epoch,
             new_epoch=new_epoch,
-            state=ShardState.ACTIVATE.value,
-        )
-        
-        self.log_event(
-            event="activate_start",
-            shard_id=shard_id,
-            new_owner=new_owner,
-            epoch=new_epoch,
+            attempt_id=attempt_id,
             state=ShardState.ACTIVATE.value,
         )
 
-        self.send(new_owner, ActivateShard(shard_id=shard_id, epoch=new_epoch))
+        self.send(
+            new_owner,
+            ActivateShard(
+                shard_id=shard_id,
+                epoch=new_epoch,
+                attempt_id=attempt_id,
+            ),
+        )
 
         self.store.update(shard_id, state=ShardState.CLEANUP)
 
@@ -281,19 +333,34 @@ class Coordinator(Process):
             event="cleanup_start",
             shard_id=shard_id,
             old_owner=old_owner,
+            new_owner=new_owner,
             epoch=new_epoch,
+            attempt_id=attempt_id,
             state=ShardState.CLEANUP.value,
         )
 
-        self.send(old_owner, CleanupShard(shard_id=shard_id, epoch=new_epoch))
+        self.send(
+            old_owner,
+            CleanupShard(
+                shard_id=shard_id,
+                epoch=new_epoch,
+                attempt_id=attempt_id,
+            ),
+        )
 
-        self.store.update(shard_id, state=ShardState.STABLE, target=None)
+        self.store.update(
+            shard_id,
+            state=ShardState.STABLE,
+            target=None,
+            attempt_id=None,
+        )
 
         self.log_event(
             event="reassign_complete",
             shard_id=shard_id,
             owner=new_owner,
             epoch=new_epoch,
+            completed_attempt_id=attempt_id,
             state=ShardState.STABLE.value,
         )
 
@@ -308,15 +375,15 @@ class Coordinator(Process):
             return self.transfer_timeout
         return None
 
-    def _phase_key(self, shard_id: str, phase: ShardState) -> tuple[str, str]:
-        return (shard_id, phase.value)
+    def _phase_key(self, shard_id: str, phase: ShardState, attempt_id: int) -> tuple[str, str, int]:
+        return (shard_id, phase.value, attempt_id)
 
-    def _start_phase_timer(self, shard_id: str, phase: ShardState):
+    def _start_phase_timer(self, shard_id: str, phase: ShardState, attempt_id: int):
         timeout = self._phase_timeout_value(phase)
         if timeout is None:
             return
 
-        key = self._phase_key(shard_id, phase)
+        key = self._phase_key(shard_id, phase, attempt_id)
         token = self._phase_tokens.get(key, 0) + 1
         self._phase_tokens[key] = token
 
@@ -324,17 +391,18 @@ class Coordinator(Process):
             event="phase_timer_started",
             shard_id=shard_id,
             phase=phase.value,
+            attempt_id=attempt_id,
             timeout=timeout,
             token=token,
         )
 
         def on_timeout():
-            self._on_phase_timeout(shard_id, phase, token)
+            self._on_phase_timeout(shard_id, phase, attempt_id, token)
 
         self.network.loop.schedule(timeout, on_timeout)
 
-    def _cancel_phase_timer(self, shard_id: str, phase: ShardState):
-        key = self._phase_key(shard_id, phase)
+    def _cancel_phase_timer(self, shard_id: str, phase: ShardState, attempt_id: int):
+        key = self._phase_key(shard_id, phase, attempt_id)
         if key not in self._phase_tokens:
             return
 
@@ -346,10 +414,11 @@ class Coordinator(Process):
             event="phase_timer_canceled",
             shard_id=shard_id,
             phase=phase.value,
+            attempt_id=attempt_id,
         )
 
-    def _on_phase_timeout(self, shard_id: str, phase: ShardState, token: int):
-        key = self._phase_key(shard_id, phase)
+    def _on_phase_timeout(self, shard_id: str, phase: ShardState, attempt_id: int, token: int):
+        key = self._phase_key(shard_id, phase, attempt_id)
         current_token = self._phase_tokens.get(key)
         if current_token != token:
             return
@@ -357,12 +426,15 @@ class Coordinator(Process):
         shard = self.store.get(shard_id)
         if shard["state"] != phase:
             return
+        if shard.get("attempt_id") != attempt_id:
+            return
 
         retries = self._phase_retry_counts.get(key, 0)
         self.log_event(
             event="phase_timeout",
             shard_id=shard_id,
             phase=phase.value,
+            attempt_id=attempt_id,
             retries=retries,
         )
 
@@ -371,6 +443,7 @@ class Coordinator(Process):
                 event="phase_retry_exhausted",
                 shard_id=shard_id,
                 phase=phase.value,
+                attempt_id=attempt_id,
                 retries=retries,
             )
             self._abort_reconfiguration(
@@ -380,28 +453,37 @@ class Coordinator(Process):
             return
 
         self._phase_retry_counts[key] = retries + 1
-        self._retry_phase_action(shard_id, phase, retries + 1)
+        self._retry_phase_action(shard_id, phase, attempt_id, retries + 1)
 
-    def _retry_phase_action(self, shard_id: str, phase: ShardState, retry_num: int):
+    def _retry_phase_action(self, shard_id: str, phase: ShardState, attempt_id: int, retry_num: int):
         shard = self.store.get(shard_id)
+
+        if shard.get("attempt_id") != attempt_id:
+            return
 
         if phase == ShardState.FREEZE:
             self.log_event(
                 event="phase_retry_send",
                 shard_id=shard_id,
                 phase=phase.value,
+                attempt_id=attempt_id,
                 retry=retry_num,
                 target=shard["owner"],
             )
             self.send(
                 shard["owner"],
-                FreezeShard(shard_id=shard_id, epoch=shard["epoch"]),
+                FreezeShard(
+                    shard_id=shard_id,
+                    epoch=shard["epoch"],
+                    attempt_id=attempt_id,
+                ),
             )
         elif phase == ShardState.TRANSFER:
             self.log_event(
                 event="phase_retry_send",
                 shard_id=shard_id,
                 phase=phase.value,
+                attempt_id=attempt_id,
                 retry=retry_num,
                 target=shard["owner"],
             )
@@ -411,6 +493,7 @@ class Coordinator(Process):
                     shard_id=shard_id,
                     epoch=shard["epoch"],
                     target=shard["target"],
+                    attempt_id=attempt_id,
                 ),
             )
         else:
@@ -420,9 +503,8 @@ class Coordinator(Process):
         if base is None:
             return
 
-        # exponential backoff by retry number: base * (retry_backoff ** (retry_num - 1))
         next_timeout = base * (self.retry_backoff ** (retry_num - 1))
-        key = self._phase_key(shard_id, phase)
+        key = self._phase_key(shard_id, phase, attempt_id)
         next_token = self._phase_tokens.get(key, 0) + 1
         self._phase_tokens[key] = next_token
 
@@ -430,13 +512,14 @@ class Coordinator(Process):
             event="phase_timer_restarted",
             shard_id=shard_id,
             phase=phase.value,
+            attempt_id=attempt_id,
             timeout=next_timeout,
             retry=retry_num,
             token=next_token,
         )
 
         def on_timeout():
-            self._on_phase_timeout(shard_id, phase, next_token)
+            self._on_phase_timeout(shard_id, phase, attempt_id, next_token)
 
         self.network.loop.schedule(next_timeout, on_timeout)
 
@@ -450,10 +533,12 @@ class Coordinator(Process):
         old_owner = shard["owner"]
         target = shard["target"]
         old_epoch = shard["epoch"]
+        attempt_id = shard.get("attempt_id")
         abort_epoch = old_epoch + 1
 
-        self._cancel_phase_timer(shard_id, ShardState.FREEZE)
-        self._cancel_phase_timer(shard_id, ShardState.TRANSFER)
+        if attempt_id is not None:
+            self._cancel_phase_timer(shard_id, ShardState.FREEZE, attempt_id)
+            self._cancel_phase_timer(shard_id, ShardState.TRANSFER, attempt_id)
 
         self.store.update(
             shard_id,
@@ -461,30 +546,38 @@ class Coordinator(Process):
             epoch=abort_epoch,
             state=ShardState.STABLE,
             target=None,
+            attempt_id=None,
         )
 
         self.log_event(
             event="reassign_abort",
             shard_id=shard_id,
-            owner=old_owner,
+            reason=reason,
+            old_owner=old_owner,
             target=target,
+            prev_state=prev_state.value,
             old_epoch=old_epoch,
             abort_epoch=abort_epoch,
-            prev_state=prev_state.value,
-            reason=reason,
-            state=ShardState.STABLE.value,
+            aborted_attempt_id=attempt_id,
         )
 
-        participants = {old_owner}
-        if target is not None:
-            participants.add(target)
+        self.send(
+            old_owner,
+            AbortReconfiguration(
+                shard_id=shard_id,
+                epoch=abort_epoch,
+                attempt_id=attempt_id,
+                reason=reason,
+            ),
+        )
 
-        for node_id in participants:
+        if target is not None and target != old_owner:
             self.send(
-                node_id,
+                target,
                 AbortReconfiguration(
                     shard_id=shard_id,
                     epoch=abort_epoch,
+                    attempt_id=attempt_id,
                     reason=reason,
                 ),
             )

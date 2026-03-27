@@ -59,6 +59,7 @@ class ShardServer(Process):
             "epoch": epoch,
             "state": ShardState.STABLE,
             "data": dict(data or {}),
+            "attempt_id": None,
         }
 
     def has_shard(self, shard_id: str) -> bool:
@@ -263,14 +264,32 @@ class ShardServer(Process):
             return
 
         if shard["state"] == ShardState.FREEZE:
+            if shard.get("attempt_id") != message.attempt_id:
+                self.log_event(
+                    event="freeze_attempt_mismatch",
+                    coordinator=src,
+                    shard_id=message.shard_id,
+                    msg_attempt_id=message.attempt_id,
+                    local_attempt_id=shard.get("attempt_id"),
+                )
+                return
+
             self.log_event(
                 event="freeze_duplicate",
                 coordinator=src,
                 shard_id=message.shard_id,
                 epoch=message.epoch,
+                attempt_id=message.attempt_id,
                 state=shard["state"].value,
             )
-            self.send(src, FreezeAck(shard_id=message.shard_id, epoch=message.epoch))
+            self.send(
+                src,
+                FreezeAck(
+                    shard_id=message.shard_id,
+                    epoch=message.epoch,
+                    attempt_id=message.attempt_id,
+                ),
+            )
             return
 
         if shard["state"] == ShardState.TRANSFER:
@@ -279,6 +298,7 @@ class ShardServer(Process):
                 coordinator=src,
                 shard_id=message.shard_id,
                 epoch=message.epoch,
+                attempt_id=message.attempt_id,
                 state=shard["state"].value,
             )
             return
@@ -289,21 +309,31 @@ class ShardServer(Process):
                 coordinator=src,
                 shard_id=message.shard_id,
                 epoch=message.epoch,
+                attempt_id=message.attempt_id,
                 state=shard["state"].value,
             )
             return
 
         shard["state"] = ShardState.FREEZE
+        shard["attempt_id"] = message.attempt_id
 
         self.log_event(
             event="freeze_enter",
             coordinator=src,
             shard_id=message.shard_id,
             epoch=message.epoch,
+            attempt_id=message.attempt_id,
             state=ShardState.FREEZE.value,
         )
 
-        self.send(src, FreezeAck(shard_id=message.shard_id, epoch=message.epoch))
+        self.send(
+            src,
+            FreezeAck(
+                shard_id=message.shard_id,
+                epoch=message.epoch,
+                attempt_id=message.attempt_id,
+            ),
+        )
 
     def _handle_begin_transfer(self, src: str, message: BeginTransfer):
         shard = self.shards.get(message.shard_id)
@@ -327,11 +357,22 @@ class ShardServer(Process):
             return
 
         if shard["state"] == ShardState.TRANSFER:
+            if shard.get("attempt_id") != message.attempt_id:
+                self.log_event(
+                    event="begin_transfer_attempt_mismatch",
+                    coordinator=src,
+                    shard_id=message.shard_id,
+                    msg_attempt_id=message.attempt_id,
+                    local_attempt_id=shard.get("attempt_id"),
+                )
+                return
+
             self.log_event(
                 event="begin_transfer_duplicate",
                 coordinator=src,
                 shard_id=message.shard_id,
                 target=message.target,
+                attempt_id=message.attempt_id,
                 state=shard["state"].value,
             )
             return
@@ -345,9 +386,19 @@ class ShardServer(Process):
             )
             return
 
-        self.transfer_out(message.shard_id, message.target)
+        if shard.get("attempt_id") != message.attempt_id:
+            self.log_event(
+                event="begin_transfer_attempt_mismatch",
+                coordinator=src,
+                shard_id=message.shard_id,
+                msg_attempt_id=message.attempt_id,
+                local_attempt_id=shard.get("attempt_id"),
+            )
+            return
 
-    def transfer_out(self, shard_id: str, target: str):
+        self.transfer_out(message.shard_id, message.target, message.attempt_id)
+
+    def transfer_out(self, shard_id: str, target: str, attempt_id: int):
         shard = self.shards.get(shard_id)
 
         if shard is None:
@@ -367,6 +418,16 @@ class ShardServer(Process):
             )
             return
 
+        if shard.get("attempt_id") != attempt_id:
+            self.log_event(
+                event="transfer_out_attempt_mismatch",
+                shard_id=shard_id,
+                target=target,
+                attempt_id=attempt_id,
+                local_attempt_id=shard.get("attempt_id"),
+            )
+            return
+
         shard["state"] = ShardState.TRANSFER
 
         self.log_event(
@@ -374,6 +435,7 @@ class ShardServer(Process):
             shard_id=shard_id,
             target=target,
             epoch=shard["epoch"],
+            attempt_id=attempt_id,
             state=ShardState.TRANSFER.value,
         )
 
@@ -382,6 +444,7 @@ class ShardServer(Process):
             TransferShard(
                 shard_id=shard_id,
                 epoch=shard["epoch"],
+                attempt_id=attempt_id,
                 data=dict(shard["data"]),
             ),
         )
@@ -394,6 +457,7 @@ class ShardServer(Process):
                 source=src,
                 shard_id=message.shard_id,
                 msg_epoch=message.epoch,
+                msg_attempt_id=message.attempt_id,
                 local_epoch=local_shard["epoch"],
                 local_state=local_shard["state"].value,
             )
@@ -407,12 +471,15 @@ class ShardServer(Process):
                     source=src,
                     shard_id=message.shard_id,
                     msg_epoch=message.epoch,
+                    msg_attempt_id=message.attempt_id,
                     pending_epoch=pending["epoch"],
+                    pending_attempt_id=pending["attempt_id"],
                 )
                 return
 
             if (
                 pending["epoch"] == message.epoch
+                and pending["attempt_id"] == message.attempt_id
                 and pending["source"] == src
                 and pending["data"] == dict(message.data)
             ):
@@ -421,10 +488,15 @@ class ShardServer(Process):
                     source=src,
                     shard_id=message.shard_id,
                     epoch=message.epoch,
+                    attempt_id=message.attempt_id,
                 )
                 self.send(
                     self.coordinator_id,
-                    TransferAck(shard_id=message.shard_id, epoch=message.epoch),
+                    TransferAck(
+                        shard_id=message.shard_id,
+                        epoch=message.epoch,
+                        attempt_id=message.attempt_id,
+                    ),
                 )
                 return
 
@@ -434,12 +506,15 @@ class ShardServer(Process):
                     source=src,
                     shard_id=message.shard_id,
                     msg_epoch=message.epoch,
+                    msg_attempt_id=message.attempt_id,
                     pending_source=pending["source"],
+                    pending_attempt_id=pending["attempt_id"],
                 )
                 return
 
         self.pending_incoming[message.shard_id] = {
             "epoch": message.epoch,
+            "attempt_id": message.attempt_id,
             "data": dict(message.data),
             "source": src,
         }
@@ -449,11 +524,16 @@ class ShardServer(Process):
             source=src,
             shard_id=message.shard_id,
             epoch=message.epoch,
+            attempt_id=message.attempt_id,
         )
 
         self.send(
             self.coordinator_id,
-            TransferAck(shard_id=message.shard_id, epoch=message.epoch),
+            TransferAck(
+                shard_id=message.shard_id,
+                epoch=message.epoch,
+                attempt_id=message.attempt_id,
+            ),
         )
 
     def _handle_activate_shard(self, src: str, message: ActivateShard):
@@ -465,11 +545,22 @@ class ShardServer(Process):
                 coordinator=src,
                 shard_id=message.shard_id,
                 new_epoch=message.epoch,
+                attempt_id=message.attempt_id,
             )
             return
 
         old_epoch = pending["epoch"]
         new_epoch = message.epoch
+
+        if pending["attempt_id"] != message.attempt_id:
+            self.log_event(
+                event="activate_attempt_mismatch",
+                coordinator=src,
+                shard_id=message.shard_id,
+                msg_attempt_id=message.attempt_id,
+                pending_attempt_id=pending["attempt_id"],
+            )
+            return
 
         if new_epoch <= old_epoch:
             self.log_event(
@@ -478,6 +569,7 @@ class ShardServer(Process):
                 shard_id=message.shard_id,
                 old_epoch=old_epoch,
                 new_epoch=new_epoch,
+                attempt_id=message.attempt_id,
             )
             return
 
@@ -485,6 +577,7 @@ class ShardServer(Process):
             "epoch": new_epoch,
             "state": ShardState.STABLE,
             "data": dict(pending["data"]),
+            "attempt_id": None,
         }
 
         del self.pending_incoming[message.shard_id]
@@ -495,6 +588,7 @@ class ShardServer(Process):
             shard_id=message.shard_id,
             old_epoch=old_epoch,
             new_epoch=new_epoch,
+            attempt_id=message.attempt_id,
             state=ShardState.STABLE.value,
         )
 
@@ -515,7 +609,20 @@ class ShardServer(Process):
                 coordinator=src,
                 shard_id=message.shard_id,
                 cleanup_epoch=message.epoch,
+                cleanup_attempt_id=message.attempt_id,
                 local_epoch=shard["epoch"],
+                local_attempt_id=shard.get("attempt_id"),
+                state=shard["state"].value,
+            )
+            return
+
+        if shard.get("attempt_id") != message.attempt_id:
+            self.log_event(
+                event="cleanup_attempt_mismatch",
+                coordinator=src,
+                shard_id=message.shard_id,
+                cleanup_attempt_id=message.attempt_id,
+                local_attempt_id=shard.get("attempt_id"),
                 state=shard["state"].value,
             )
             return
@@ -527,6 +634,7 @@ class ShardServer(Process):
             coordinator=src,
             shard_id=message.shard_id,
             cleanup_epoch=message.epoch,
+            attempt_id=message.attempt_id,
         )
 
     def _handle_abort_reconfiguration(self, src: str, message: AbortReconfiguration):
@@ -539,31 +647,61 @@ class ShardServer(Process):
                 coordinator=src,
                 shard_id=message.shard_id,
                 abort_epoch=message.epoch,
+                attempt_id=message.attempt_id,
                 reason=message.reason,
             )
             return
 
+        is_resync = message.reason == "resync_on_recover"
+
         if shard is not None:
-            shard["epoch"] = message.epoch
-            shard["state"] = ShardState.STABLE
-            self.log_event(
-                event="abort_local_rollback",
-                coordinator=src,
-                shard_id=message.shard_id,
-                abort_epoch=message.epoch,
-                reason=message.reason,
-                state=ShardState.STABLE.value,
-            )
+            local_attempt = shard.get("attempt_id")
+            if is_resync or local_attempt is None or local_attempt == message.attempt_id:
+                shard["epoch"] = message.epoch
+                shard["state"] = ShardState.STABLE
+                shard["attempt_id"] = None
+                self.log_event(
+                    event="abort_local_rollback",
+                    coordinator=src,
+                    shard_id=message.shard_id,
+                    abort_epoch=message.epoch,
+                    attempt_id=message.attempt_id,
+                    reason=message.reason,
+                    state=ShardState.STABLE.value,
+                )
+            else:
+                self.log_event(
+                    event="abort_local_attempt_mismatch",
+                    coordinator=src,
+                    shard_id=message.shard_id,
+                    abort_epoch=message.epoch,
+                    msg_attempt_id=message.attempt_id,
+                    local_attempt_id=local_attempt,
+                    reason=message.reason,
+                )
 
         if pending is not None:
-            del self.pending_incoming[message.shard_id]
-            self.log_event(
-                event="abort_pending_cleared",
-                coordinator=src,
-                shard_id=message.shard_id,
-                abort_epoch=message.epoch,
-                reason=message.reason,
-            )
+            local_pending_attempt = pending.get("attempt_id")
+            if is_resync or local_pending_attempt == message.attempt_id:
+                del self.pending_incoming[message.shard_id]
+                self.log_event(
+                    event="abort_pending_cleared",
+                    coordinator=src,
+                    shard_id=message.shard_id,
+                    abort_epoch=message.epoch,
+                    attempt_id=message.attempt_id,
+                    reason=message.reason,
+                )
+            else:
+                self.log_event(
+                    event="abort_pending_attempt_mismatch",
+                    coordinator=src,
+                    shard_id=message.shard_id,
+                    abort_epoch=message.epoch,
+                    msg_attempt_id=message.attempt_id,
+                    local_attempt_id=local_pending_attempt,
+                    reason=message.reason,
+                )
 
     # --------------------------------------------------
     # Client reply helper

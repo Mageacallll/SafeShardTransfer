@@ -1,6 +1,5 @@
 from common.types import FreezeAck, TransferAck
 from metadata.coordinator import Coordinator
-from shardserver.server import ShardServer
 from sim.harness import Harness
 from sim.process import Process
 
@@ -41,37 +40,71 @@ def test_reassign_sends_freeze_to_old_owner():
     assert msg.__class__.__name__ == "FreezeShard"
     assert msg.shard_id == "s1"
     assert msg.epoch == 1
+    assert msg.attempt_id == 1
 
 
 def test_freeze_ack_moves_to_transfer_and_sends_begin_transfer():
     h, coord, a, b = setup_coordinator_only()
 
     coord.reassign("s1", "B")
-    h.schedule(1, coord.on_message, "A", FreezeAck(shard_id="s1", epoch=1))
+    h.schedule(1, coord.on_message, "A", FreezeAck(shard_id="s1", epoch=1, attempt_id=1))
     h.run()
 
     meta = coord.store.get("s1")
     assert meta["state"].value == "TRANSFER"
+    assert meta["attempt_id"] == 1
 
     assert len(a.messages) >= 2
     src, msg = a.messages[-1]
     assert src == "coord"
     assert msg.__class__.__name__ == "BeginTransfer"
     assert msg.target == "B"
+    assert msg.attempt_id == 1
 
 
 def test_transfer_ack_commits_new_owner_and_bumps_epoch():
     h, coord, a, b = setup_coordinator_only()
 
     coord.reassign("s1", "B")
-    coord.on_message("A", FreezeAck(shard_id="s1", epoch=1))
-    h.schedule(1, coord.on_message, "B", TransferAck(shard_id="s1", epoch=1))
+    coord.on_message("A", FreezeAck(shard_id="s1", epoch=1, attempt_id=1))
+    h.schedule(1, coord.on_message, "B", TransferAck(shard_id="s1", epoch=1, attempt_id=1))
     h.run()
 
     meta = coord.store.get("s1")
     assert meta["owner"] == "B"
     assert meta["epoch"] == 2
     assert meta["state"].value == "STABLE"
+    assert meta["attempt_id"] is None
+
+
+def test_stale_freeze_ack_wrong_attempt_is_ignored():
+    h, coord, a, b = setup_coordinator_only()
+
+    coord.reassign("s1", "B")
+    coord.on_message("A", FreezeAck(shard_id="s1", epoch=1, attempt_id=999))
+
+    meta = coord.store.get("s1")
+    assert meta["state"].value == "FREEZE"
+
+    events = [e["event"] for e in coord.event_log]
+    assert "freeze_ack_attempt_mismatch" in events
+    assert "freeze_ack_accepted" not in events
+
+
+def test_stale_transfer_ack_wrong_attempt_is_ignored():
+    h, coord, a, b = setup_coordinator_only()
+
+    coord.reassign("s1", "B")
+    coord.on_message("A", FreezeAck(shard_id="s1", epoch=1, attempt_id=1))
+    coord.on_message("B", TransferAck(shard_id="s1", epoch=1, attempt_id=999))
+
+    meta = coord.store.get("s1")
+    assert meta["state"].value == "TRANSFER"
+    assert meta["owner"] == "A"
+
+    events = [e["event"] for e in coord.event_log]
+    assert "transfer_ack_attempt_mismatch" in events
+    assert "transfer_ack_accepted" not in events
 
 
 def test_freeze_timeout_retries_freeze_message_once():
@@ -90,11 +123,13 @@ def test_freeze_timeout_retries_freeze_message_once():
     h.schedule(1, coord.reassign, "s1", "B")
     h.run()
 
-    # Initial FreezeShard + one retry FreezeShard (then abort on exhaustion)
     assert len(a.messages) == 3
     assert a.messages[0][1].__class__.__name__ == "FreezeShard"
+    assert a.messages[0][1].attempt_id == 1
     assert a.messages[1][1].__class__.__name__ == "FreezeShard"
+    assert a.messages[1][1].attempt_id == 1
     assert a.messages[2][1].__class__.__name__ == "AbortReconfiguration"
+    assert a.messages[2][1].attempt_id == 1
 
     events = [e["event"] for e in coord.event_log]
     assert "phase_timeout" in events
@@ -104,6 +139,7 @@ def test_freeze_timeout_retries_freeze_message_once():
     meta = coord.store.get("s1")
     assert meta["state"].value == "STABLE"
     assert meta["epoch"] == 2
+    assert meta["attempt_id"] is None
 
 
 def test_freeze_timeout_canceled_after_ack():
@@ -120,10 +156,9 @@ def test_freeze_timeout_canceled_after_ack():
     coord.init_shard("s1", owner="A", epoch=1)
 
     h.schedule(1, coord.reassign, "s1", "B")
-    h.schedule(2, coord.on_message, "A", FreezeAck(shard_id="s1", epoch=1))
+    h.schedule(2, coord.on_message, "A", FreezeAck(shard_id="s1", epoch=1, attempt_id=1))
     h.run()
 
-    # Timeout callback should be stale once ack is accepted and timer canceled.
     events = [e["event"] for e in coord.event_log]
     assert "phase_timer_started" in events
     assert "phase_timer_canceled" in events
@@ -131,6 +166,7 @@ def test_freeze_timeout_canceled_after_ack():
 
     meta = coord.store.get("s1")
     assert meta["state"].value == "TRANSFER"
+    assert meta["attempt_id"] == 1
 
 
 def test_freeze_timeout_exhausted_aborts_reconfiguration():
@@ -154,6 +190,7 @@ def test_freeze_timeout_exhausted_aborts_reconfiguration():
     assert meta["state"].value == "STABLE"
     assert meta["epoch"] == 2
     assert meta["target"] is None
+    assert meta["attempt_id"] is None
 
     events = [e["event"] for e in coord.event_log]
     assert "phase_retry_exhausted" in events
@@ -174,7 +211,7 @@ def test_transfer_timeout_exhausted_aborts_reconfiguration():
     coord.init_shard("s1", owner="A", epoch=1)
 
     h.schedule(1, coord.reassign, "s1", "B")
-    h.schedule(2, coord.on_message, "A", FreezeAck(shard_id="s1", epoch=1))
+    h.schedule(2, coord.on_message, "A", FreezeAck(shard_id="s1", epoch=1, attempt_id=1))
     h.run()
 
     meta = coord.store.get("s1")
@@ -182,6 +219,7 @@ def test_transfer_timeout_exhausted_aborts_reconfiguration():
     assert meta["state"].value == "STABLE"
     assert meta["epoch"] == 2
     assert meta["target"] is None
+    assert meta["attempt_id"] is None
 
     events = [e["event"] for e in coord.event_log]
     assert "phase_retry_exhausted" in events
@@ -202,7 +240,7 @@ def test_participant_crash_during_transfer_aborts_reconfiguration():
     coord.init_shard("s1", owner="A", epoch=1)
 
     h.schedule(1, coord.reassign, "s1", "B")
-    h.schedule(2, coord.on_message, "A", FreezeAck(shard_id="s1", epoch=1))
+    h.schedule(2, coord.on_message, "A", FreezeAck(shard_id="s1", epoch=1, attempt_id=1))
     h.schedule(3, h.crash_node, "B")
     h.run()
 
@@ -211,6 +249,7 @@ def test_participant_crash_during_transfer_aborts_reconfiguration():
     assert meta["state"].value == "STABLE"
     assert meta["epoch"] == 2
     assert meta["target"] is None
+    assert meta["attempt_id"] is None
 
     events = [e["event"] for e in coord.event_log]
     assert "participant_crash_detected" in events
