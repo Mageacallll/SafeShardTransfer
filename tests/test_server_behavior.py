@@ -3,7 +3,6 @@ from common.types import (
     AbortReconfiguration,
     BeginTransfer,
     CleanupShard,
-    ClientReply,
     ClientRequest,
     FreezeShard,
     ShardState,
@@ -118,7 +117,6 @@ def test_duplicate_request_id_deduplicates_put():
         ),
     )
 
-    # Same request_id should be treated as duplicate and not re-executed.
     server.on_message(
         "client1",
         ClientRequest(
@@ -197,6 +195,28 @@ def test_freeze_epoch_mismatch():
     assert server.event_log[-1]["event"] == "freeze_epoch_mismatch"
 
 
+def test_freeze_duplicate_resends_ack_without_state_regression():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=1, data={"x": 1})
+    server.shards["s1"]["state"] = ShardState.FREEZE
+
+    server.on_message("coord", FreezeShard(shard_id="s1", epoch=1))
+
+    assert server.shards["s1"]["state"] == ShardState.FREEZE
+    assert server.event_log[-1]["event"] == "freeze_duplicate"
+
+
+def test_freeze_ignored_after_transfer():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=1, data={"x": 1})
+    server.shards["s1"]["state"] = ShardState.TRANSFER
+
+    server.on_message("coord", FreezeShard(shard_id="s1", epoch=1))
+
+    assert server.shards["s1"]["state"] == ShardState.TRANSFER
+    assert server.event_log[-1]["event"] == "freeze_ignored_after_transfer"
+
+
 # --------------------------------------------------
 # Transfer out behavior
 # --------------------------------------------------
@@ -240,6 +260,17 @@ def test_begin_transfer_wrong_state():
     assert server.event_log[-1]["event"] == "begin_transfer_wrong_state"
 
 
+def test_begin_transfer_duplicate_is_ignored():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=1, data={"x": 10})
+    server.shards["s1"]["state"] = ShardState.TRANSFER
+
+    server.on_message("coord", BeginTransfer(shard_id="s1", epoch=1, target="B"))
+
+    assert server.shards["s1"]["state"] == ShardState.TRANSFER
+    assert server.event_log[-1]["event"] == "begin_transfer_duplicate"
+
+
 # --------------------------------------------------
 # Transfer in behavior
 # --------------------------------------------------
@@ -254,6 +285,56 @@ def test_receive_transfer_shard_creates_pending_state():
     assert peer.pending_incoming["s1"]["data"] == {"x": 10}
     assert peer.pending_incoming["s1"]["source"] == "A"
     assert peer.event_log[-1]["event"] == "transfer_in_received"
+
+
+def test_receive_transfer_shard_duplicate_is_idempotent():
+    h, _, peer = setup_server_system()
+
+    peer.on_message("A", TransferShard(shard_id="s1", epoch=1, data={"x": 10}))
+    peer.on_message("A", TransferShard(shard_id="s1", epoch=1, data={"x": 10}))
+
+    assert peer.pending_incoming["s1"]["epoch"] == 1
+    assert peer.pending_incoming["s1"]["data"] == {"x": 10}
+    assert peer.event_log[-1]["event"] == "transfer_in_duplicate"
+
+
+def test_receive_transfer_shard_rejects_when_local_epoch_is_newer_or_equal():
+    h, _, peer = setup_server_system()
+    peer.init_shard("s1", epoch=2, data={"x": 99})
+
+    peer.on_message("A", TransferShard(shard_id="s1", epoch=1, data={"x": 10}))
+
+    assert "s1" not in peer.pending_incoming
+    assert peer.shards["s1"]["data"] == {"x": 99}
+    assert peer.event_log[-1]["event"] == "transfer_in_reject_local_newer_or_equal"
+
+
+def test_receive_transfer_shard_rejects_when_pending_newer_exists():
+    h, _, peer = setup_server_system()
+    peer.pending_incoming["s1"] = {
+        "epoch": 2,
+        "data": {"x": 99},
+        "source": "A",
+    }
+
+    peer.on_message("A", TransferShard(shard_id="s1", epoch=1, data={"x": 10}))
+
+    assert peer.pending_incoming["s1"]["epoch"] == 2
+    assert peer.event_log[-1]["event"] == "transfer_in_reject_pending_newer"
+
+
+def test_receive_transfer_shard_rejects_same_epoch_conflict():
+    h, _, peer = setup_server_system()
+    peer.pending_incoming["s1"] = {
+        "epoch": 1,
+        "data": {"x": 99},
+        "source": "A",
+    }
+
+    peer.on_message("C", TransferShard(shard_id="s1", epoch=1, data={"x": 10}))
+
+    assert peer.pending_incoming["s1"]["data"] == {"x": 99}
+    assert peer.event_log[-1]["event"] == "transfer_in_conflict_same_epoch"
 
 
 # --------------------------------------------------
@@ -322,6 +403,20 @@ def test_cleanup_missing_shard():
 
     assert server.event_log[-1]["event"] == "cleanup_missing_shard"
 
+
+def test_cleanup_stale_epoch_is_ignored():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=2, data={"x": 10})
+
+    server.on_message("coord", CleanupShard(shard_id="s1", epoch=2))
+
+    assert "s1" in server.shards
+    assert server.event_log[-1]["event"] == "cleanup_stale_epoch"
+
+
+# --------------------------------------------------
+# Abort behavior
+# --------------------------------------------------
 
 def test_abort_rolls_back_local_shard_to_stable():
     h, server, _ = setup_server_system()
