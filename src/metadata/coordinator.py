@@ -22,11 +22,27 @@ from sim.process import Process
 
 
 class Coordinator(Process):
-    def __init__(self, node_id: str):
+    def __init__(
+        self,
+        node_id: str,
+        freeze_timeout: int | None = None,
+        transfer_timeout: int | None = None,
+        max_retries: int = 0,
+        retry_backoff: int = 2,
+    ):
         super().__init__(node_id)
         self.store = MetadataStore()
         self.event_log = []
         self._event_seq = 0
+
+        self.freeze_timeout = freeze_timeout
+        self.transfer_timeout = transfer_timeout
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
+
+        # timeout tokens prevent stale callbacks from mutating state
+        self._phase_tokens: dict[tuple[str, str], int] = {}
+        self._phase_retry_counts: dict[tuple[str, str], int] = {}
 
     # --------------------------------------------------
     # Public API
@@ -71,6 +87,8 @@ class Coordinator(Process):
         )
 
         self.send(old_owner, FreezeShard(shard_id=shard_id, epoch=current_epoch))
+
+        self._start_phase_timer(shard_id, ShardState.FREEZE)
 
     # --------------------------------------------------
     # Message handling
@@ -129,6 +147,8 @@ class Coordinator(Process):
             )
             return
 
+        self._cancel_phase_timer(shard_id, ShardState.FREEZE)
+
         self.store.update(shard_id, state=ShardState.TRANSFER)
 
         self.log_event(
@@ -148,6 +168,8 @@ class Coordinator(Process):
                 target=shard["target"],
             ),
         )
+
+        self._start_phase_timer(shard_id, ShardState.TRANSFER)
 
     def _handle_transfer_ack(self, src: str, message: TransferAck):
         shard_id = message.shard_id
@@ -180,6 +202,8 @@ class Coordinator(Process):
                 current_epoch=shard["epoch"],
             )
             return
+
+        self._cancel_phase_timer(shard_id, ShardState.TRANSFER)
 
         old_owner = shard["owner"]
         new_owner = shard["target"]
@@ -234,6 +258,145 @@ class Coordinator(Process):
             epoch=new_epoch,
             state=ShardState.STABLE.value,
         )
+
+    # --------------------------------------------------
+    # Timeout / retry helpers
+    # --------------------------------------------------
+
+    def _phase_timeout_value(self, phase: ShardState) -> int | None:
+        if phase == ShardState.FREEZE:
+            return self.freeze_timeout
+        if phase == ShardState.TRANSFER:
+            return self.transfer_timeout
+        return None
+
+    def _phase_key(self, shard_id: str, phase: ShardState) -> tuple[str, str]:
+        return (shard_id, phase.value)
+
+    def _start_phase_timer(self, shard_id: str, phase: ShardState):
+        timeout = self._phase_timeout_value(phase)
+        if timeout is None:
+            return
+
+        key = self._phase_key(shard_id, phase)
+        token = self._phase_tokens.get(key, 0) + 1
+        self._phase_tokens[key] = token
+
+        self.log_event(
+            event="phase_timer_started",
+            shard_id=shard_id,
+            phase=phase.value,
+            timeout=timeout,
+            token=token,
+        )
+
+        def on_timeout():
+            self._on_phase_timeout(shard_id, phase, token)
+
+        self.network.loop.schedule(timeout, on_timeout)
+
+    def _cancel_phase_timer(self, shard_id: str, phase: ShardState):
+        key = self._phase_key(shard_id, phase)
+        if key not in self._phase_tokens:
+            return
+
+        # bump token so scheduled callbacks for previous token become stale
+        self._phase_tokens[key] += 1
+        self._phase_retry_counts.pop(key, None)
+
+        self.log_event(
+            event="phase_timer_canceled",
+            shard_id=shard_id,
+            phase=phase.value,
+        )
+
+    def _on_phase_timeout(self, shard_id: str, phase: ShardState, token: int):
+        key = self._phase_key(shard_id, phase)
+        current_token = self._phase_tokens.get(key)
+        if current_token != token:
+            return
+
+        shard = self.store.get(shard_id)
+        if shard["state"] != phase:
+            return
+
+        retries = self._phase_retry_counts.get(key, 0)
+        self.log_event(
+            event="phase_timeout",
+            shard_id=shard_id,
+            phase=phase.value,
+            retries=retries,
+        )
+
+        if retries >= self.max_retries:
+            self.log_event(
+                event="phase_retry_exhausted",
+                shard_id=shard_id,
+                phase=phase.value,
+                retries=retries,
+            )
+            return
+
+        self._phase_retry_counts[key] = retries + 1
+        self._retry_phase_action(shard_id, phase, retries + 1)
+
+    def _retry_phase_action(self, shard_id: str, phase: ShardState, retry_num: int):
+        shard = self.store.get(shard_id)
+
+        if phase == ShardState.FREEZE:
+            self.log_event(
+                event="phase_retry_send",
+                shard_id=shard_id,
+                phase=phase.value,
+                retry=retry_num,
+                target=shard["owner"],
+            )
+            self.send(
+                shard["owner"],
+                FreezeShard(shard_id=shard_id, epoch=shard["epoch"]),
+            )
+        elif phase == ShardState.TRANSFER:
+            self.log_event(
+                event="phase_retry_send",
+                shard_id=shard_id,
+                phase=phase.value,
+                retry=retry_num,
+                target=shard["owner"],
+            )
+            self.send(
+                shard["owner"],
+                BeginTransfer(
+                    shard_id=shard_id,
+                    epoch=shard["epoch"],
+                    target=shard["target"],
+                ),
+            )
+        else:
+            return
+
+        base = self._phase_timeout_value(phase)
+        if base is None:
+            return
+
+        # exponential backoff by retry number: base * (retry_backoff ** (retry_num - 1))
+        next_timeout = base * (self.retry_backoff ** (retry_num - 1))
+        key = self._phase_key(shard_id, phase)
+        next_token = self._phase_tokens.get(key, 0) + 1
+        self._phase_tokens[key] = next_token
+
+        self.log_event(
+            event="phase_timer_restarted",
+            shard_id=shard_id,
+            phase=phase.value,
+            timeout=next_timeout,
+            retry=retry_num,
+            token=next_token,
+        )
+
+        def on_timeout():
+            self._on_phase_timeout(shard_id, phase, next_token)
+
+        self.network.loop.schedule(next_timeout, on_timeout)
 
     # --------------------------------------------------
     # Logging helper

@@ -72,3 +72,59 @@ def test_transfer_ack_commits_new_owner_and_bumps_epoch():
     assert meta["owner"] == "B"
     assert meta["epoch"] == 2
     assert meta["state"].value == "STABLE"
+
+
+def test_freeze_timeout_retries_freeze_message_once():
+    h = Harness(drop_prob=0.0, min_delay=1, max_delay=1, seed=0)
+
+    coord = Coordinator("coord", freeze_timeout=2, max_retries=1)
+    a = Inbox("A")
+    b = Inbox("B")
+
+    h.add_node(coord)
+    h.add_node(a)
+    h.add_node(b)
+
+    coord.init_shard("s1", owner="A", epoch=1)
+
+    h.schedule(1, coord.reassign, "s1", "B")
+    h.run()
+
+    # Initial FreezeShard + one retry FreezeShard
+    assert len(a.messages) == 2
+    assert a.messages[0][1].__class__.__name__ == "FreezeShard"
+    assert a.messages[1][1].__class__.__name__ == "FreezeShard"
+
+    events = [e["event"] for e in coord.event_log]
+    assert "phase_timeout" in events
+    assert "phase_retry_send" in events
+
+    meta = coord.store.get("s1")
+    assert meta["state"].value == "FREEZE"
+
+
+def test_freeze_timeout_canceled_after_ack():
+    h = Harness(drop_prob=0.0, min_delay=1, max_delay=1, seed=0)
+
+    coord = Coordinator("coord", freeze_timeout=5, max_retries=1)
+    a = Inbox("A")
+    b = Inbox("B")
+
+    h.add_node(coord)
+    h.add_node(a)
+    h.add_node(b)
+
+    coord.init_shard("s1", owner="A", epoch=1)
+
+    h.schedule(1, coord.reassign, "s1", "B")
+    h.schedule(2, coord.on_message, "A", FreezeAck(shard_id="s1", epoch=1))
+    h.run()
+
+    # Timeout callback should be stale once ack is accepted and timer canceled.
+    events = [e["event"] for e in coord.event_log]
+    assert "phase_timer_started" in events
+    assert "phase_timer_canceled" in events
+    assert events.count("phase_timeout") == 0
+
+    meta = coord.store.get("s1")
+    assert meta["state"].value == "TRANSFER"
