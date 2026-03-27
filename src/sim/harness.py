@@ -43,6 +43,12 @@ class Harness:
     def schedule(self, delay: int, fn, *args):
         self.loop.schedule(delay, fn, *args)
 
+    def schedule_at(self, at_time: int, fn, *args):
+        delay = at_time - self.loop.time
+        if delay < 0:
+            raise ValueError(f"Cannot schedule in the past: at_time={at_time}, now={self.loop.time}")
+        self.loop.schedule(delay, fn, *args)
+
     def crash_node(self, node_id: str):
         node = self.get_node(node_id)
         node.crash()
@@ -74,6 +80,47 @@ class Harness:
 
     def clear_link_configs(self):
         self.network.clear_link_configs()
+
+    def schedule_failures(self, failure_schedule: list[dict]):
+        """
+        Schedule failure events from declarative entries.
+
+        Supported entries:
+        - {"time": int, "type": "crash", "node_id": str}
+        - {"time": int, "type": "recover", "node_id": str}
+        - {
+            "time": int,
+            "type": "link_config",
+            "source": str,
+            "dest": str,
+            "config": {...LinkConfig kwargs except source/dest...}
+          }
+        """
+        for item in failure_schedule:
+            event_type = item.get("type")
+            at_time = item.get("time")
+
+            if event_type == "crash":
+                self.schedule_at(at_time, self.crash_node, item["node_id"])
+            elif event_type == "recover":
+                self.schedule_at(at_time, self.recover_node, item["node_id"])
+            elif event_type == "link_config":
+                source = item["source"]
+                dest = item["dest"]
+                config_kwargs = dict(item.get("config", {}))
+
+                def apply_link(src=source, dst=dest, kwargs=config_kwargs):
+                    self.set_link_config(
+                        LinkConfig(
+                            source=src,
+                            dest=dst,
+                            **kwargs,
+                        )
+                    )
+
+                self.schedule_at(at_time, apply_link)
+            else:
+                raise ValueError(f"Unknown failure type in schedule: {event_type}")
 
     def run(self, max_steps: int = 100_000):
         self.loop.run(max_steps=max_steps)

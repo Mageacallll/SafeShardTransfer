@@ -97,6 +97,79 @@ def run_scenario(name: str):
         h.schedule(1, coord.reassign, "s1", "B")
         schedule_client_workload(h, client, expect_post_reconfig_owner=True)
 
+    elif name == "cascading_drop_then_old_owner_crash":
+        def drop_transfer(src, dst, msg):
+            return msg.__class__.__name__ == "TransferShard"
+
+        h.add_drop_rule(drop_transfer)
+        h.schedule(1, coord.reassign, "s1", "B")
+        h.schedule(4, h.crash_node, "A")
+        schedule_client_workload(h, client, expect_post_reconfig_owner=False)
+
+    elif name == "partition_then_recover":
+        h.schedule(1, coord.reassign, "s1", "B")
+
+        h.schedule_failures(
+            [
+                {
+                    "time": 2,
+                    "type": "link_config",
+                    "source": "coord",
+                    "dest": "A",
+                    "config": {
+                        "partition_enabled": True,
+                        "partition_start_time": 2,
+                        "partition_end_time": 8,
+                    },
+                },
+                {
+                    "time": 2,
+                    "type": "link_config",
+                    "source": "A",
+                    "dest": "coord",
+                    "config": {
+                        "partition_enabled": True,
+                        "partition_start_time": 2,
+                        "partition_end_time": 8,
+                    },
+                },
+            ]
+        )
+
+        schedule_client_workload(h, client, expect_post_reconfig_owner=False)
+
+    elif name == "reorder_and_duplicate_transfer_path":
+        h.schedule(1, coord.reassign, "s1", "B")
+        h.schedule_failures(
+            [
+                {
+                    "time": 1,
+                    "type": "link_config",
+                    "source": "A",
+                    "dest": "B",
+                    "config": {
+                        "reorder_enabled": True,
+                        "duplicate_rate": 0.5,
+                        "delay_min_ms": 1,
+                        "delay_max_ms": 5,
+                    },
+                },
+                {
+                    "time": 1,
+                    "type": "link_config",
+                    "source": "B",
+                    "dest": "coord",
+                    "config": {
+                        "reorder_enabled": True,
+                        "duplicate_rate": 0.5,
+                        "delay_min_ms": 1,
+                        "delay_max_ms": 5,
+                    },
+                },
+            ]
+        )
+        schedule_client_workload(h, client, expect_post_reconfig_owner=True)
+
     else:
         raise ValueError(f"Unknown scenario: {name}")
 
@@ -174,6 +247,9 @@ def run_all_scenarios():
         "drop_transfer_shard_message",
         "old_owner_crash_during_freeze",
         "new_owner_crash_before_transfer_ack",
+        "cascading_drop_then_old_owner_crash",
+        "partition_then_recover",
+        "reorder_and_duplicate_transfer_path",
     ]
 
     results = []
