@@ -144,3 +144,39 @@ In all cases:
 
 The most valuable contribution of AI was:
 > helping us articulate and recognize the tradeoffs revealed by our system
+
+---
+
+## 8. Unreliability + Recovery Patch Session (Mar 26–27)
+
+**Context:**
+We extended the simulator and protocol from safety-only behavior to include unreliable-network controls and bounded recovery behavior.
+
+**AI Usage:**
+AI generated code was used to improve the speed of implementation of:
+- Implemented and validated network fault features:
+  - per-link drop/delay controls
+  - reordering and duplication
+  - partition windows
+- Implemented coordinator recovery logic:
+  - phase timeouts and exponential-backoff retries
+  - timeout/crash-triggered safe abort to `STABLE`
+  - crash/recover notifications and resynchronization hooks
+- Implemented server-side request deduplication (`request_id`)
+- Added harness failure scheduling and new cascading/noisy scenarios
+- Expanded verification:
+  - network-layer tests
+  - coordinator/server failure-path tests
+  - liveness tests (completion-or-safe-abort)
+  - full regression runs after each milestone
+
+AI was also used to summarize changes for the various project documents.
+
+**Outcome:**
+- Unreliable network behaviors are now directly simulated and configurable
+- Reconfiguration no longer stalls indefinitely at coordinator level; attempts converge by completion or safe abort
+- Safety invariants remained intact under noisy links and crash scenarios
+- Test suite increased and remained fully passing
+
+**Decision Ownership:**
+AI accelerated implementation and validation, but failure scenario selection, parameter tuning, and interpretation of tradeoffs remained team decisions.
