@@ -1,7 +1,6 @@
 
 ### Mermaid Architecture Diagram
 
-```markdown
 # System Architecture
 
 ```mermaid
@@ -28,3 +27,4 @@ flowchart LR
     ServerA --> KV1[(Shard KV Store)]
     ServerB --> KV2[(Shard KV Store)]
     ServerC --> KV3[(Shard KV Store)]
+```

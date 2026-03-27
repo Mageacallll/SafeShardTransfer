@@ -11,8 +11,15 @@ flowchart TD
     C --> G[Scenario 2: TransferShard message is dropped]
     C --> H[Scenario 3: new owner crashes before TransferAck]
     A --> I[Scenario 4: false suspicion triggers unnecessary reconfiguration]
+    C --> L[Scenario 5: cascading drop then old owner crash]
+    B --> M[Scenario 6: partition then recover]
+    C --> N[Scenario 7: reorder and duplicate transfer path]
 
-    F --> J[Expected result: safety preserved, liveness stalls]
+    F --> J[Expected result: aborted_safe]
     G --> J
     H --> J
-    I --> K[Expected result: safe completion with unnecessary availability cost]
+    L --> J
+    I --> K[Expected result: completed with temporary availability cost]
+    M --> K
+    N --> K
+```

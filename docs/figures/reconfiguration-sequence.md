@@ -1,4 +1,3 @@
-```markdown
 ## Reconfiguration Timeline
 
 ```mermaid
@@ -17,3 +16,4 @@ sequenceDiagram
     C->>B: ActivateShard(epoch+1)
 
     C->>A: CleanupShard
+```

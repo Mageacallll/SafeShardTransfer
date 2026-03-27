@@ -19,3 +19,7 @@ sequenceDiagram
     C->>A: CleanupShard
 
     Note over C,A: Scenario 4: same sequence can be triggered by false suspicion
+    Note over C: Scenario 5: transfer drop + owner crash => aborted_safe
+    Note over C: Scenario 6: temporary partition then recover => completed
+    Note over C: Scenario 7: reorder/duplicate noise => completed
+```

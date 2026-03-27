@@ -97,18 +97,43 @@ The reassignment process is now complete.
 
 ## 3.3 Protocol Messages
 
-The protocol uses explicit control messages exchanged between the coordinator and shard servers.
+Canonical message definitions live in `src/common/types.py`.
 
-| Message | Sender | Receiver | Purpose |
-|-------|-------|-------|-------|
-FreezeShard | Coordinator | Old Owner | request freeze of shard operations |
-FreezeAck | Old Owner | Coordinator | confirm shard is frozen |
-TransferShard | Old Owner | New Owner | transfer shard state |
-TransferAck | New Owner | Coordinator | confirm state received |
-ActivateShard | Coordinator | New Owner | activate shard with new epoch |
-CleanupShard | Coordinator | Old Owner | delete old shard state |
+### Control Plane Messages
 
-These messages allow the coordinator to track progress and ensure that each stage completes before proceeding.
+| Message | Signature | Sender | Receiver | Purpose |
+|---|---|---|---|---|
+| `FreezeShard` | `(shard_id: ShardId, epoch: Epoch, attempt_id: AttemptId)` | Coordinator | Old Owner | Request freeze of shard operations |
+| `BeginTransfer` | `(shard_id: ShardId, epoch: Epoch, target: NodeId, attempt_id: AttemptId)` | Coordinator | Old Owner | Start transfer to target owner |
+| `ActivateShard` | `(shard_id: ShardId, epoch: Epoch, attempt_id: AttemptId)` | Coordinator | New Owner | Activate shard under committed epoch |
+| `CleanupShard` | `(shard_id: ShardId, epoch: Epoch, attempt_id: AttemptId)` | Coordinator | Old Owner | Delete old local shard copy |
+| `AbortReconfiguration` | `(shard_id: ShardId, epoch: Epoch, attempt_id: AttemptId \| None, reason: str \| None = None)` | Coordinator | Participants | Abort attempt and converge metadata/state safely |
+
+### Acknowledgment Messages
+
+| Message | Signature | Sender | Receiver | Purpose |
+|---|---|---|---|---|
+| `FreezeAck` | `(shard_id: ShardId, epoch: Epoch, attempt_id: AttemptId)` | Old Owner | Coordinator | Confirm freeze completed |
+| `TransferAck` | `(shard_id: ShardId, epoch: Epoch, attempt_id: AttemptId)` | New Owner | Coordinator | Confirm transfer accepted |
+
+### Data Plane Message
+
+| Message | Signature | Sender | Receiver | Purpose |
+|---|---|---|---|---|
+| `TransferShard` | `(shard_id: ShardId, epoch: Epoch, attempt_id: AttemptId, data: Dict[Key, Value])` | Old Owner | New Owner | Carry shard key-value data during migration |
+
+### Client-Facing Messages
+
+| Message | Signature | Sender | Receiver | Purpose |
+|---|---|---|---|---|
+| `ClientRequest` | `(shard_id: ShardId, epoch: Epoch, key: Key, value: Value \| None, op: str, request_id: str \| None = None)` | Client | Shard Server | Read/write operation request (`GET` or `PUT`) |
+| `ClientReply` | `(success: bool, value: Value \| None, error: str \| None = None)` | Shard Server | Client | Operation result or rejection reason |
+
+### Internal Trigger
+
+| Message | Signature | Sender | Receiver | Purpose |
+|---|---|---|---|---|
+| `StartReconfiguration` | `(shard_id: ShardId, new_owner: NodeId)` | Harness/Controller | Coordinator | Trigger reassignment workflow |
 
 ---
 
