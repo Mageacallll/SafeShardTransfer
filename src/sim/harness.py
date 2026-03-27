@@ -10,7 +10,7 @@ Responsibilities:
 """
 
 from sim.event_loop import EventLoop
-from sim.network import Network
+from sim.network import Network, LinkConfig
 
 
 class Harness:
@@ -58,6 +58,12 @@ class Harness:
 
     def clear_drop_rules(self):
         self.network.clear_drop_rules()
+
+    def set_link_config(self, config: LinkConfig):
+        self.network.set_link_config(config)
+
+    def clear_link_configs(self):
+        self.network.clear_link_configs()
 
     def run(self, max_steps: int = 100_000):
         self.loop.run(max_steps=max_steps)

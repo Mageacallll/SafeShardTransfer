@@ -58,3 +58,25 @@ def assert_at_most_one_stable_holder(shard_id, *servers):
 
 def has_event(node, event_name):
     return any(e.get("event") == event_name for e in getattr(node, "event_log", []))
+
+
+def apply_link_configs(harness, link_configs):
+    """
+    Apply a batch of link configs to a harness network.
+
+    Each item can be either:
+    - a LinkConfig instance
+    - a dict of LinkConfig constructor kwargs
+    """
+    from sim.network import LinkConfig
+
+    for item in link_configs:
+        if isinstance(item, LinkConfig):
+            harness.set_link_config(item)
+        elif isinstance(item, dict):
+            harness.set_link_config(LinkConfig(**item))
+        else:
+            raise TypeError(
+                "link_configs entries must be LinkConfig or dict, "
+                f"got {type(item).__name__}"
+            )
