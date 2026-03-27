@@ -35,14 +35,30 @@ def setup_basic_system():
     return h, coord, a, b, client
 
 # Helper to schedule client operations when it is idle (no pending request)
-def schedule_when_idle(h, client, delay, fn, *args):
-    def try_start():
+def schedule_when_idle(h, client, delay, fn, *args, max_wait_checks=20):
+    """
+    Schedule a client operation once the client becomes idle.
+
+    If the client remains busy for too long (for example, because a request
+    was sent to a crashed node and never receives a reply), the workload
+    event is skipped to avoid infinite event generation.
+    """
+    def try_start(remaining_checks):
         if client.pending_request is None:
             fn(*args)
-        else:
-            h.schedule(1, try_start)
+            return
 
-    h.schedule(delay, try_start)
+        if remaining_checks <= 0:
+            print(
+                f"[t={h.loop.time}] WORKLOAD skipped request after waiting "
+                f"{max_wait_checks} ticks for idle client: "
+                f"{getattr(fn, '__name__', str(fn))}{args}"
+            )
+            return
+
+        h.schedule(1, try_start, remaining_checks - 1)
+
+    h.schedule(delay, try_start, max_wait_checks)
 
 # workload helper
 def schedule_client_workload(h, client, expect_post_reconfig_owner=False):
