@@ -26,6 +26,7 @@ def summarize_run(coordinator, servers: list, shard_id: str, scenario_name: str)
 
     start = _first_event(coord_events, "reassign_start", shard_id)
     complete = _first_event(coord_events, "reassign_complete", shard_id)
+    abort = _first_event(coord_events, "reassign_abort", shard_id)
 
     freeze_enter = _first_event(server_events, "freeze_enter", shard_id)
     transfer_out = _first_event(server_events, "transfer_out_start", shard_id)
@@ -33,7 +34,7 @@ def summarize_run(coordinator, servers: list, shard_id: str, scenario_name: str)
     cleanup_complete = _first_event(server_events, "cleanup_complete", shard_id)
 
     reconfig_start_time = start["time"] if start else None
-    reconfig_end_time = complete["time"] if complete else None
+    reconfig_end_time = complete["time"] if complete else (abort["time"] if abort else None)
 
     total_reconfig_duration = None
     if reconfig_start_time is not None and reconfig_end_time is not None:
@@ -51,12 +52,30 @@ def summarize_run(coordinator, servers: list, shard_id: str, scenario_name: str)
     if activate_complete and cleanup_complete:
         cleanup_duration = cleanup_complete["time"] - activate_complete["time"]
 
+    completed = complete is not None
+    aborted = abort is not None
+    converged = shard_meta["state"].value == "STABLE"
+    stuck = (not completed) and (not aborted) and (not converged)
+
+    if completed:
+        outcome = "completed"
+    elif aborted and converged:
+        outcome = "aborted_safe"
+    elif stuck:
+        outcome = f"stuck_{shard_meta['state'].value.lower()}"
+    else:
+        outcome = "incomplete"
+
     metrics = {
         "scenario_name": scenario_name,
         "shard_id": shard_id,
-        "completed": complete is not None,
-        "stalled": complete is None,
-        "stall_state": None if complete else shard_meta["state"].value,
+        "completed": completed,
+        "aborted": aborted,
+        "converged": converged,
+        "stuck": stuck,
+        "outcome": outcome,
+        "stalled": stuck,  # compatibility with older output consumers
+        "stall_state": shard_meta["state"].value if stuck else None,
         "final_owner": shard_meta["owner"],
         "final_epoch": shard_meta["epoch"],
         "final_state": shard_meta["state"].value,
@@ -69,6 +88,10 @@ def summarize_run(coordinator, servers: list, shard_id: str, scenario_name: str)
         "freeze_ack_count": _count_events(coord_events, "freeze_ack_accepted", shard_id),
         "transfer_ack_count": _count_events(coord_events, "transfer_ack_accepted", shard_id),
         "transfer_shard_sent_count": _count_events(server_events, "transfer_out_start", shard_id),
+        "phase_timeout_count": _count_events(coord_events, "phase_timeout", shard_id),
+        "phase_retry_send_count": _count_events(coord_events, "phase_retry_send", shard_id),
+        "phase_retry_exhausted_count": _count_events(coord_events, "phase_retry_exhausted", shard_id),
+        "reassign_abort_count": _count_events(coord_events, "reassign_abort", shard_id),
         "client_reject_reconfiguring": _count_events(server_events, "client_reject_reconfiguring", shard_id),
         "client_reject_epoch_mismatch": _count_events(server_events, "client_reject_epoch_mismatch", shard_id),
         "client_reject_missing_shard": _count_events(server_events, "client_reject_missing_shard", shard_id),

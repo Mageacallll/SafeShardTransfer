@@ -1,6 +1,6 @@
 scenarios:
   - name: drop_transfer_shard_message
-    description: Drop TransferShard so reconfiguration stalls safely in TRANSFER.
+    description: Drop TransferShard so reconfiguration safely aborts back to STABLE.
     setup:
       shard_id: s1
       initial_owner: A
@@ -8,6 +8,9 @@ scenarios:
       initial_epoch: 1
       initial_data:
         k: v
+    liveness:
+      transfer_timeout: 2
+      max_retries: 1
     inject:
       type: drop_message
       message_type: TransferShard
@@ -18,8 +21,8 @@ scenarios:
         no_activate_complete: true
       final_metadata:
         owner: A
-        state: TRANSFER
-        epoch: 1
+        state: STABLE
+        epoch: 2
 
   - name: old_owner_crash_during_freeze
     description: Crash the old owner before freeze is acknowledged.
@@ -30,6 +33,9 @@ scenarios:
       initial_epoch: 1
       initial_data:
         k: v
+    liveness:
+      freeze_timeout: 2
+      max_retries: 1
     inject:
       type: crash_node
       node_id: A
@@ -52,6 +58,9 @@ scenarios:
       initial_epoch: 1
       initial_data:
         k: v
+    liveness:
+      transfer_timeout: 2
+      max_retries: 1
     inject:
       type: crash_node
       node_id: B
@@ -74,6 +83,10 @@ scenarios:
       initial_epoch: 1
       initial_data:
         k: v
+    liveness:
+      freeze_timeout: 2
+      transfer_timeout: 2
+      max_retries: 1
     inject:
       type: false_suspicion
       trigger_reassign: true
@@ -95,6 +108,9 @@ scenarios:
       initial_epoch: 1
       initial_data:
         k: v
+    liveness:
+      transfer_timeout: 2
+      max_retries: 1
     inject:
       type: cascading
       events:
@@ -113,7 +129,7 @@ scenarios:
         epoch: 2
 
   - name: partition_then_recover
-    description: Temporarily partition coordinator and old owner, then heal.
+    description: Temporarily partition coordinator and old owner, then heal and complete.
     setup:
       shard_id: s1
       initial_owner: A
@@ -121,6 +137,9 @@ scenarios:
       initial_epoch: 1
       initial_data:
         k: v
+    liveness:
+      freeze_timeout: 2
+      max_retries: 3
     inject:
       type: partition
       links:
@@ -135,8 +154,9 @@ scenarios:
     expected:
       safety:
         at_most_one_stable_owner: true
+        reassign_complete: true
       final_metadata:
-        owner: A
+        owner: B
         state: STABLE
         epoch: 2
 
@@ -149,6 +169,10 @@ scenarios:
       initial_epoch: 1
       initial_data:
         k: v
+    liveness:
+      freeze_timeout: 2
+      transfer_timeout: 2
+      max_retries: 2
     inject:
       type: link_noise
       links:
