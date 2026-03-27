@@ -45,6 +45,7 @@ class ClientRequest:
     key: Key
     value: Value | None
     op: str  # "GET" or "PUT"
+    request_id: str | None = None
 
 
 @dataclass
@@ -81,6 +82,13 @@ class ActivateShard:
 class CleanupShard:
     shard_id: ShardId
     epoch: Epoch
+
+
+@dataclass
+class AbortReconfiguration:
+    shard_id: ShardId
+    epoch: Epoch
+    reason: str | None = None
 
 
 # -----------------------------

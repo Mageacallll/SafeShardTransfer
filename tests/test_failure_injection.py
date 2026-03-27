@@ -82,8 +82,8 @@ def test_old_owner_crash_during_freeze():
     meta = coord.store.get("s1")
 
     assert meta["owner"] == "A"
-    assert meta["epoch"] == 1
-    assert meta["state"].value == "FREEZE"
+    assert meta["epoch"] == 2
+    assert meta["state"].value == "STABLE"
 
     assert_at_most_one_stable_holder("s1", a, b)
 
@@ -95,6 +95,7 @@ def test_old_owner_crash_during_freeze():
     assert "freeze_ack_accepted" not in names
     assert "transfer_ack_accepted" not in names
     assert "reassign_complete" not in names
+    assert "reassign_abort" in names
 
 
 def test_new_owner_crash_before_transfer_ack():
@@ -119,8 +120,8 @@ def test_new_owner_crash_before_transfer_ack():
     meta = coord.store.get("s1")
 
     assert meta["owner"] == "A"
-    assert meta["epoch"] == 1
-    assert meta["state"].value == "TRANSFER"
+    assert meta["epoch"] == 2
+    assert meta["state"].value == "STABLE"
 
     assert_at_most_one_stable_holder("s1", a, b)
 
@@ -137,6 +138,7 @@ def test_new_owner_crash_before_transfer_ack():
     assert "activate_complete" not in names
     assert "cleanup_complete" not in names
     assert "reassign_complete" not in names
+    assert "reassign_abort" in names
 
 
 def test_false_suspicion_triggers_safe_but_unnecessary_reconfig():

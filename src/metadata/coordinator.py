@@ -9,6 +9,7 @@ STABLE -> FREEZE -> TRANSFER -> ACTIVATE -> CLEANUP -> STABLE
 
 from common.types import (
     ActivateShard,
+    AbortReconfiguration,
     BeginTransfer,
     CleanupShard,
     FreezeAck,
@@ -89,6 +90,29 @@ class Coordinator(Process):
         self.send(old_owner, FreezeShard(shard_id=shard_id, epoch=current_epoch))
 
         self._start_phase_timer(shard_id, ShardState.FREEZE)
+
+    def on_node_crash(self, node_id: str):
+        for shard_id, shard in list(self.store.shards.items()):
+            if shard["state"] not in (ShardState.FREEZE, ShardState.TRANSFER):
+                continue
+
+            if node_id == shard["owner"] or node_id == shard["target"]:
+                self.log_event(
+                    event="participant_crash_detected",
+                    shard_id=shard_id,
+                    crashed_node=node_id,
+                    state=shard["state"].value,
+                )
+                self._abort_reconfiguration(
+                    shard_id,
+                    reason=f"participant_crash_{node_id}",
+                )
+
+    def on_node_recover(self, node_id: str):
+        self.log_event(
+            event="participant_recovered",
+            node_id=node_id,
+        )
 
     # --------------------------------------------------
     # Message handling
@@ -335,6 +359,10 @@ class Coordinator(Process):
                 phase=phase.value,
                 retries=retries,
             )
+            self._abort_reconfiguration(
+                shard_id,
+                reason=f"timeout_exhausted_{phase.value.lower()}",
+            )
             return
 
         self._phase_retry_counts[key] = retries + 1
@@ -397,6 +425,55 @@ class Coordinator(Process):
             self._on_phase_timeout(shard_id, phase, next_token)
 
         self.network.loop.schedule(next_timeout, on_timeout)
+
+    def _abort_reconfiguration(self, shard_id: str, reason: str):
+        shard = self.store.get(shard_id)
+        prev_state = shard["state"]
+
+        if prev_state == ShardState.STABLE:
+            return
+
+        old_owner = shard["owner"]
+        target = shard["target"]
+        old_epoch = shard["epoch"]
+        abort_epoch = old_epoch + 1
+
+        self._cancel_phase_timer(shard_id, ShardState.FREEZE)
+        self._cancel_phase_timer(shard_id, ShardState.TRANSFER)
+
+        self.store.update(
+            shard_id,
+            owner=old_owner,
+            epoch=abort_epoch,
+            state=ShardState.STABLE,
+            target=None,
+        )
+
+        self.log_event(
+            event="reassign_abort",
+            shard_id=shard_id,
+            owner=old_owner,
+            target=target,
+            old_epoch=old_epoch,
+            abort_epoch=abort_epoch,
+            prev_state=prev_state.value,
+            reason=reason,
+            state=ShardState.STABLE.value,
+        )
+
+        participants = {old_owner}
+        if target is not None:
+            participants.add(target)
+
+        for node_id in participants:
+            self.send(
+                node_id,
+                AbortReconfiguration(
+                    shard_id=shard_id,
+                    epoch=abort_epoch,
+                    reason=reason,
+                ),
+            )
 
     # --------------------------------------------------
     # Logging helper

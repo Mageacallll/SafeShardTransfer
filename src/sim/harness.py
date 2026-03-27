@@ -46,11 +46,21 @@ class Harness:
     def crash_node(self, node_id: str):
         node = self.get_node(node_id)
         node.crash()
+
+        for observer in self.nodes.values():
+            if hasattr(observer, "on_node_crash") and callable(observer.on_node_crash):
+                observer.on_node_crash(node_id)
+
         print(f"[t={self.loop.time}] HARNESS crash node={node_id}")
 
     def recover_node(self, node_id: str):
         node = self.get_node(node_id)
         node.recover()
+
+        for observer in self.nodes.values():
+            if hasattr(observer, "on_node_recover") and callable(observer.on_node_recover):
+                observer.on_node_recover(node_id)
+
         print(f"[t={self.loop.time}] HARNESS recover node={node_id}")
 
     def add_drop_rule(self, rule):

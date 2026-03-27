@@ -1,5 +1,6 @@
 from common.types import (
     ActivateShard,
+    AbortReconfiguration,
     BeginTransfer,
     CleanupShard,
     ClientReply,
@@ -99,6 +100,69 @@ def test_reject_unknown_operation():
     )
 
     assert server.event_log[-1]["event"] == "client_reject_unknown_op"
+
+
+def test_duplicate_request_id_deduplicates_put():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=1, data={"x": 1})
+
+    server.on_message(
+        "client1",
+        ClientRequest(
+            shard_id="s1",
+            epoch=1,
+            key="x",
+            value=99,
+            op="PUT",
+            request_id="req-1",
+        ),
+    )
+
+    # Same request_id should be treated as duplicate and not re-executed.
+    server.on_message(
+        "client1",
+        ClientRequest(
+            shard_id="s1",
+            epoch=1,
+            key="x",
+            value=123,
+            op="PUT",
+            request_id="req-1",
+        ),
+    )
+
+    assert server.shards["s1"]["data"]["x"] == 99
+    assert server.event_log[-1]["event"] == "client_request_dedup_hit"
+
+
+def test_duplicate_request_id_deduplicates_errors():
+    h, server, _ = setup_server_system()
+
+    server.on_message(
+        "client1",
+        ClientRequest(
+            shard_id="missing",
+            epoch=1,
+            key="x",
+            value=None,
+            op="GET",
+            request_id="req-miss",
+        ),
+    )
+
+    server.on_message(
+        "client1",
+        ClientRequest(
+            shard_id="missing",
+            epoch=1,
+            key="x",
+            value=None,
+            op="GET",
+            request_id="req-miss",
+        ),
+    )
+
+    assert server.event_log[-1]["event"] == "client_request_dedup_hit"
 
 
 # --------------------------------------------------
@@ -257,6 +321,38 @@ def test_cleanup_missing_shard():
     server.on_message("coord", CleanupShard(shard_id="s1", epoch=2))
 
     assert server.event_log[-1]["event"] == "cleanup_missing_shard"
+
+
+def test_abort_rolls_back_local_shard_to_stable():
+    h, server, _ = setup_server_system()
+    server.init_shard("s1", epoch=1, data={"x": 10})
+    server.shards["s1"]["state"] = ShardState.TRANSFER
+
+    server.on_message(
+        "coord",
+        AbortReconfiguration(shard_id="s1", epoch=2, reason="timeout_exhausted_transfer"),
+    )
+
+    assert server.shards["s1"]["state"] == ShardState.STABLE
+    assert server.shards["s1"]["epoch"] == 2
+    assert server.event_log[-1]["event"] == "abort_local_rollback"
+
+
+def test_abort_clears_pending_incoming_state():
+    h, _, peer = setup_server_system()
+    peer.pending_incoming["s1"] = {
+        "epoch": 1,
+        "data": {"x": 10},
+        "source": "A",
+    }
+
+    peer.on_message(
+        "coord",
+        AbortReconfiguration(shard_id="s1", epoch=2, reason="timeout_exhausted_transfer"),
+    )
+
+    assert "s1" not in peer.pending_incoming
+    assert peer.event_log[-1]["event"] == "abort_pending_cleared"
 
 
 # --------------------------------------------------

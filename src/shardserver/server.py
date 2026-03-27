@@ -12,6 +12,7 @@ Responsibilities:
 
 from common.types import (
     ActivateShard,
+    AbortReconfiguration,
     BeginTransfer,
     CleanupShard,
     ClientReply,
@@ -39,6 +40,11 @@ class ShardServer(Process):
         
         self.event_log = []
         self._event_seq = 0
+
+        # (client_id, request_id) -> {success, value, error}
+        self.request_cache = {}
+        self.request_cache_order = []
+        self.request_cache_max_size = 1000
 
     # --------------------------------------------------
     # Local shard management
@@ -84,6 +90,9 @@ class ShardServer(Process):
         elif isinstance(message, CleanupShard):
             self._handle_cleanup_shard(src, message)
 
+        elif isinstance(message, AbortReconfiguration):
+            self._handle_abort_reconfiguration(src, message)
+
         else:
             self.log_event(
                 event="unknown_message",
@@ -96,6 +105,23 @@ class ShardServer(Process):
     # --------------------------------------------------
 
     def _handle_client_request(self, src: str, message: ClientRequest):
+        if message.request_id is not None:
+            cached = self.request_cache.get((src, message.request_id))
+            if cached is not None:
+                self._reply_client(
+                    src,
+                    success=cached["success"],
+                    value=cached["value"],
+                    error=cached["error"],
+                )
+                self.log_event(
+                    event="client_request_dedup_hit",
+                    client=src,
+                    shard_id=message.shard_id,
+                    request_id=message.request_id,
+                )
+                return
+
         shard = self.shards.get(message.shard_id)
 
         if shard is None:
@@ -105,6 +131,7 @@ class ShardServer(Process):
                 value=None,
                 error="wrong_owner_or_missing_shard",
             )
+            self._cache_client_reply(src, message, success=False, value=None, error="wrong_owner_or_missing_shard")
             self.log_event(
                 event="client_reject_missing_shard",
                 client=src,
@@ -122,6 +149,7 @@ class ShardServer(Process):
                 value=None,
                 error="stale_or_wrong_epoch",
             )
+            self._cache_client_reply(src, message, success=False, value=None, error="stale_or_wrong_epoch")
             self.log_event(
                 event="client_reject_epoch_mismatch",
                 client=src,
@@ -138,6 +166,7 @@ class ShardServer(Process):
                 value=None,
                 error="reconfiguring",
             )
+            self._cache_client_reply(src, message, success=False, value=None, error="reconfiguring")
             self.log_event(
                 event="client_reject_reconfiguring",
                 client=src,
@@ -149,6 +178,7 @@ class ShardServer(Process):
         if message.op == "GET":
             value = shard["data"].get(message.key)
             self._reply_client(src, success=True, value=value, error=None)
+            self._cache_client_reply(src, message, success=True, value=value, error=None)
             self.log_event(
                 event="client_get_ok",
                 client=src,
@@ -160,6 +190,7 @@ class ShardServer(Process):
         elif message.op == "PUT":
             shard["data"][message.key] = message.value
             self._reply_client(src, success=True, value=None, error=None)
+            self._cache_client_reply(src, message, success=True, value=None, error=None)
             self.log_event(
                 event="client_put_ok",
                 client=src,
@@ -174,6 +205,7 @@ class ShardServer(Process):
                 value=None,
                 error="unknown_operation",
             )
+            self._cache_client_reply(src, message, success=False, value=None, error="unknown_operation")
             self.log_event(
                 event="client_reject_unknown_op",
                 client=src,
@@ -370,6 +402,42 @@ class ShardServer(Process):
             cleanup_epoch=message.epoch,
         )
 
+    def _handle_abort_reconfiguration(self, src: str, message: AbortReconfiguration):
+        shard = self.shards.get(message.shard_id)
+        pending = self.pending_incoming.get(message.shard_id)
+
+        if shard is None and pending is None:
+            self.log_event(
+                event="abort_no_local_state",
+                coordinator=src,
+                shard_id=message.shard_id,
+                abort_epoch=message.epoch,
+                reason=message.reason,
+            )
+            return
+
+        if shard is not None:
+            shard["epoch"] = message.epoch
+            shard["state"] = ShardState.STABLE
+            self.log_event(
+                event="abort_local_rollback",
+                coordinator=src,
+                shard_id=message.shard_id,
+                abort_epoch=message.epoch,
+                reason=message.reason,
+                state=ShardState.STABLE.value,
+            )
+
+        if pending is not None:
+            del self.pending_incoming[message.shard_id]
+            self.log_event(
+                event="abort_pending_cleared",
+                coordinator=src,
+                shard_id=message.shard_id,
+                abort_epoch=message.epoch,
+                reason=message.reason,
+            )
+
     # --------------------------------------------------
     # Client reply helper
     # --------------------------------------------------
@@ -383,6 +451,25 @@ class ShardServer(Process):
                 error=error,
             ),
         )
+
+    def _cache_client_reply(self, client_id: str, request: ClientRequest, success: bool, value, error):
+        if request.request_id is None:
+            return
+
+        key = (client_id, request.request_id)
+        if key in self.request_cache:
+            return
+
+        self.request_cache[key] = {
+            "success": success,
+            "value": value,
+            "error": error,
+        }
+        self.request_cache_order.append(key)
+
+        if len(self.request_cache_order) > self.request_cache_max_size:
+            evict_key = self.request_cache_order.pop(0)
+            self.request_cache.pop(evict_key, None)
 
     # --------------------------------------------------
     # Logging helper
