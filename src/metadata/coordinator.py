@@ -114,6 +114,20 @@ class Coordinator(Process):
             node_id=node_id,
         )
 
+        # Resynchronize recovered participants with coordinator metadata.
+        for shard_id, shard in self.store.shards.items():
+            if node_id != shard["owner"] and node_id != shard.get("target"):
+                continue
+
+            self.send(
+                node_id,
+                AbortReconfiguration(
+                    shard_id=shard_id,
+                    epoch=shard["epoch"],
+                    reason="resync_on_recover",
+                ),
+            )
+
     # --------------------------------------------------
     # Message handling
     # --------------------------------------------------

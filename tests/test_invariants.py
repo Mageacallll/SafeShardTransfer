@@ -1,6 +1,7 @@
 from metadata.coordinator import Coordinator
 from shardserver.server import ShardServer
 from sim.harness import Harness
+from sim.network import LinkConfig
 from common.types import ClientRequest
 
 
@@ -96,3 +97,57 @@ def test_no_client_success_during_freeze():
     _, reply = client.messages[-1]
     assert reply.success is False
     assert reply.error == "reconfiguring"
+
+
+def test_no_dual_owner_under_reorder_and_duplicates():
+    h, coord, a, b = setup_basic_system()
+
+    h.set_link_config(
+        LinkConfig(
+            source="A",
+            dest="B",
+            reorder_enabled=True,
+            duplicate_rate=0.8,
+            delay_min_ms=1,
+            delay_max_ms=5,
+        )
+    )
+    h.set_link_config(
+        LinkConfig(
+            source="B",
+            dest="coord",
+            reorder_enabled=True,
+            duplicate_rate=0.8,
+            delay_min_ms=1,
+            delay_max_ms=5,
+        )
+    )
+
+    h.schedule(1, coord.reassign, "s1", "B")
+    h.run()
+
+    holders = []
+    if "s1" in a.shards and a.shards["s1"]["state"].value == "STABLE":
+        holders.append("A")
+    if "s1" in b.shards and b.shards["s1"]["state"].value == "STABLE":
+        holders.append("B")
+
+    assert len(holders) <= 1
+
+
+def test_abort_after_participant_crash_preserves_single_owner():
+    h, coord, a, b = setup_basic_system()
+
+    h.schedule(1, coord.reassign, "s1", "B")
+    h.schedule(2, h.crash_node, "A")
+    h.schedule(4, h.recover_node, "A")
+    h.run()
+
+    holders = []
+    if "s1" in a.shards and a.shards["s1"]["state"].value == "STABLE":
+        holders.append("A")
+    if "s1" in b.shards and b.shards["s1"]["state"].value == "STABLE":
+        holders.append("B")
+
+    assert len(holders) <= 1
+    assert coord.store.get("s1")["state"].value == "STABLE"

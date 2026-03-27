@@ -174,3 +174,22 @@ def test_false_suspicion_triggers_safe_but_unnecessary_reconfig():
     assert "reassign_complete" in names
 
     assert has_event(coord, "reassign_complete")
+
+
+def test_old_owner_recover_resyncs_epoch_after_abort():
+    h, coord, a, b = setup_basic_system()
+
+    h.schedule(1, coord.reassign, "s1", "B")
+    h.schedule(2, h.crash_node, "A")
+    h.schedule(4, h.recover_node, "A")
+    h.run()
+
+    meta = coord.store.get("s1")
+    assert meta["owner"] == "A"
+    assert meta["state"].value == "STABLE"
+    assert meta["epoch"] == 2
+
+    local = a.get_shard("s1")
+    assert local is not None
+    assert local["state"].value == "STABLE"
+    assert local["epoch"] == 2
