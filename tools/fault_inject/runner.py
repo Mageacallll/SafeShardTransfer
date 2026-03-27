@@ -6,6 +6,12 @@ runs the simulation, and prints a summary for each scenario.
 """
 
 from pathlib import Path
+import sys
+
+# Allow direct script execution from repo root: `python tools/fault_inject/runner.py`
+SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 import yaml
 
@@ -113,8 +119,8 @@ def apply_injection(h, coord, inject_cfg):
                     dest=link["dest"],
                     reorder_enabled=link.get("reorder_enabled", False),
                     duplicate_rate=link.get("duplicate_rate", 0.0),
-                    delay_min_ms=link.get("delay_min_ms"),
-                    delay_max_ms=link.get("delay_max_ms"),
+                    delay_min_ms=link.get("delay_min_ms", 1),
+                    delay_max_ms=link.get("delay_max_ms", 1),
                 )
             )
 
