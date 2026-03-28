@@ -3,7 +3,11 @@ Simple end-to-end demo of successful shard reassignment.
 
 This script runs the happy-path protocol:
 A -> freeze -> transfer -> activate B -> cleanup A
+
+This is the normal success path of the updated attempt-scoped
+reconfiguration protocol, without injected faults.
 """
+
 from metadata.coordinator import Coordinator
 from shardserver.server import ShardServer
 from sim.harness import Harness
@@ -12,6 +16,7 @@ from sim.harness import Harness
 def main():
     h = Harness(drop_prob=0.0, min_delay=1, max_delay=1, seed=0)
 
+    # Happy-path demo: no retry/timeout configuration needed here
     coord = Coordinator("coord")
     server_a = ShardServer("A", coordinator_id="coord")
     server_b = ShardServer("B", coordinator_id="coord")
@@ -29,14 +34,25 @@ def main():
 
     h.run()
 
+    final_meta = coord.store.get("s1")
+
     print("\nFinal coordinator metadata:")
-    print(coord.store.get("s1"))
+    print(final_meta)
 
     print("\nFinal server state:")
     print("A shards:", server_a.shards)
     print("B shards:", server_b.shards)
+
     print("\nDemo result:")
-    print("Reassignment completed successfully.")
+    if (
+        final_meta["owner"] == "B"
+        and final_meta["state"].value == "STABLE"
+        and final_meta["epoch"] == 2
+        and final_meta.get("attempt_id") is None
+    ):
+        print("Reassignment completed successfully.")
+    else:
+        print("Unexpected final state.")
 
 
 if __name__ == "__main__":
