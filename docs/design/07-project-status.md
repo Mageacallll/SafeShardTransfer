@@ -17,6 +17,7 @@ The implementation has moved beyond the initial safety-only checkpoint. The curr
 - crash notifications and recovery resynchronization (`on_node_crash` / `on_node_recover`)
 - server-side client request deduplication via `request_id`
 - harness failure scheduling and additional cascading failure scenarios
+- attempt-scoped reconfiguration using `attempt_id` to isolate retries and prevent stale message interference
 
 Current validation status:
 
@@ -226,7 +227,7 @@ The runner initializes the simulator and applies fault injection rules.
 
 # 6. Failure Scenarios Tested
 
-Four initial adversarial scenarios were implemented.
+Seven representative adversarial scenarios were implemented and evaluated.
 
 ---
 
@@ -373,11 +374,16 @@ These metrics are collected through the experiment runner and summarized after e
 
 ### Protocol Refinement
 
-Experiments suggest potential improvements:
+Core reliability mechanisms have now been implemented:
 
-- transfer retries
-- timeout-based abort
-- recovery from stalled transfers
+- timeout-driven retries
+- bounded retry with safe abort
+- recovery resynchronization after crashes
+
+Future refinement may include:
+
+- adaptive timeout tuning
+- improved retry strategies under varying network conditions
 
 ### Evaluation
 
@@ -465,10 +471,10 @@ This demonstrates that correctness does not depend on accurate failure detection
 
 Across all failure scenarios:
 
-- completion is possible under partition healing and link noise
+- completion is achieved under partition healing and link noise via retry mechanisms
 - failed attempts are safely aborted when retries are exhausted or crashes are detected
 - ownership remains with the original node (A) on abort paths
-- epoch advances to abort epoch (2) while metadata returns to `STABLE`
+- epoch advances due to reconfiguration attempt (e.g., 1 → 2), even on abort while metadata returns to `STABLE`
 - no incorrect activation occurs
 
 This confirms that:
