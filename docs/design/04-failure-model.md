@@ -97,7 +97,15 @@ Result:
 
 ---
 
-## 4.5 Safety vs Liveness
+## 4.5 Bounded Recovery Time of the Coordinator
+
+The protocol assumes that the coordinator will never permanently crash. The coordinator is treated as a single point of failure.
+
+The coordinator may fail, but safety is preserved, even during a transfer, as long as the coordinator eventually recovers to continue or abort the transfer.
+
+---
+
+## 4.6 Safety vs Liveness
 
 The protocol prioritizes **safety** while adding bounded recovery for liveness.
 
@@ -106,7 +114,7 @@ Safety guarantees must hold even under arbitrary failures.
 Liveness is guaranteed only under **stabilizing conditions**, meaning:
 
 - failures eventually stop occurring
-- the metadata coordinator remains reachable
+- the metadata coordinator is eventually reachable
 - at least one process capable of hosting the shard is available
 - the network eventually delivers messages
 

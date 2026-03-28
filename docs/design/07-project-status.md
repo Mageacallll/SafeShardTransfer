@@ -306,21 +306,18 @@ However, unnecessary reconfiguration temporarily blocks operations.
 
 ---
 
-## 6.2 Old Owner Crash During FREEZE
+# 7. Key Insight So Far
 
-Fault:
+Across all evaluated scenarios:
 
-old owner crashes before FreezeAck
+| Scenario Type | Safety | Convergence Outcome |
+|--------|--------|--------|
+| transient network instability | preserved | completes |
+| persistent transfer failure | preserved | aborted_safe |
+| participant crash during reconfig | preserved | aborted_safe |
+| false suspicion | preserved | completes |
 
-Result:
-
-- coordinator detects crash
-- reconfiguration attempt is aborted
-- metadata returns to `STABLE`
-
-Observation:
-
-The protocol avoids unsafe progress and **converges via fail-fast safe abort**.
+The protocol **successfully enforces single-owner safety**, and now **converges to a terminal safe state (complete or abort) instead of indefinite coordinator-side stall**.
 
 ---
 
@@ -427,7 +424,7 @@ The repository now contains:
 - deterministic experiment infrastructure
 - reproducible failure scenarios
 
-This provides a stable foundation for deeper evaluation and further design exp
+This provides a stable foundation for deeper evaluation and further design exploration.
 
 # 13. Experimental Results
 
