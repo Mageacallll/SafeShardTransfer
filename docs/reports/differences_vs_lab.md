@@ -34,12 +34,19 @@ This project instead focuses on **unreliable failure detection**, where:
 - messages may be dropped or delayed
 - nodes may be falsely suspected
 
-The protocol must maintain safety even when:
+The protocol must maintain safety and convergence even when:
+
 - the old owner cannot respond
 - the new owner crashes mid-transfer
 - communication is unreliable
 
-This shifts the focus from correctness under normal operation to **robustness under partial failures**.
+To address this, the system introduces:
+
+- timeout-driven retries
+- bounded retry with safe abort
+- attempt-scoped reconfiguration (`attempt_id`)
+
+This shifts the focus from correctness under normal operation to **robustness and convergence under partial failures**.
 
 ---
 
@@ -106,7 +113,7 @@ This project extends evaluation significantly by introducing:
 We explicitly analyze:
 
 - safety vs liveness tradeoffs
-- protocol stall points (FREEZE vs TRANSFER)
+- protocol convergence behavior (completion vs safe abort)
 - impact of reconfiguration on client-perceived availability
 
 ---
@@ -120,10 +127,14 @@ The main contribution of this project is not just implementing shard reassignmen
 In particular, we show that:
 
 - the protocol consistently preserves **single-owner safety**
-- but may **fail to make progress under partial failures**
-- and may **reduce client-perceived availability during reconfiguration**
+- the system guarantees **bounded convergence** under failures:
+  - either successful completion, or
+  - safe abort back to a consistent `STABLE` state
+- retry and timeout mechanisms enable recovery from transient failures
+- server-side idempotence and attempt-scoped validation ensure correctness under duplicated, delayed, and reordered messages
 
-These insights go beyond the lab’s functional requirements and provide a deeper understanding of the tradeoffs involved in shard reassignment.
+These insights go beyond the lab’s functional requirements and provide a deeper understanding of how shard reassignment behaves under realistic unreliable conditions.
+This effectively transforms the protocol from a safety-only design into a **fault-aware convergent system**, which is more aligned with real-world distributed system requirements.
 
 ---
 
@@ -135,6 +146,6 @@ While inspired by Lab 5, this project differs in:
 - operating under a more adversarial failure model
 - removing replication to isolate the problem
 - using deterministic simulation for evaluation
-- emphasizing **analysis and measurement** over implementation alone
+- emphasizing **analysis, convergence behavior, and failure handling** over implementation alone
 
 This ensures that the project goes beyond reproducing the lab and instead contributes **meaningful system-level insights**.
