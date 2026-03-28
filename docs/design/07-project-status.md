@@ -21,9 +21,10 @@ The implementation has moved beyond the initial safety-only checkpoint. The curr
 Current validation status:
 
 - safety invariants remain intact under noisy network and crash scenarios
-- liveness is improved: stalled transitions now converge by completion or safe abort
-- full automated test suite currently passes (`69 passed`)
+- liveness is improved: all reconfiguration attempts now converge by either completion or safe abort
+- full automated test suite currently passes (`87 passed`)
 
+This upgrade introduces a **safe convergence model**, where the system guarantees termination in a correct state even when progress is not possible.
 Note: Sections below include historical observations from the earlier safety-only phase and should be interpreted as baseline results.
 
 ---
@@ -233,19 +234,17 @@ Four initial adversarial scenarios were implemented.
 
 Fault:
 
-
 TransferShard message dropped
-
 
 Result:
 
-- coordinator remains in `TRANSFER`
-- new owner never activates
-- old owner retains the shard
+- coordinator retries transfer up to retry budget
+- transfer cannot complete
+- coordinator aborts reconfiguration
 
 Observation:
 
-The protocol **preserves safety** but **fails to make progress**.
+The protocol **preserves safety and converges via safe abort**, rather than stalling indefinitely.
 
 ---
 
@@ -253,18 +252,17 @@ The protocol **preserves safety** but **fails to make progress**.
 
 Fault:
 
-
 old owner crashes before FreezeAck
-
 
 Result:
 
-- coordinator remains in `FREEZE`
-- reassignment cannot proceed
+- coordinator detects crash
+- reconfiguration attempt is aborted
+- metadata returns to `STABLE`
 
 Observation:
 
-The protocol prevents unsafe activation but cannot recover without the old owner.
+The protocol avoids unsafe progress and **converges via fail-fast safe abort**.
 
 ---
 
@@ -308,20 +306,21 @@ However, unnecessary reconfiguration temporarily blocks operations.
 
 ---
 
-# 7. Key Insight So Far
+## 6.2 Old Owner Crash During FREEZE
 
-Across all experiments:
+Fault:
 
-| Scenario | Safety | Liveness |
-|--------|--------|--------|
-Dropped transfer | preserved | aborted_safe |
-Old owner crash | preserved | aborted_safe |
-New owner crash | preserved | aborted_safe |
-False suspicion | preserved | completes |
+old owner crashes before FreezeAck
 
-The protocol **successfully enforces single-owner safety**, and **uses bounded retries/timeouts to converge by completion or safe abort under partial failures**.
+Result:
 
-This is a direct consequence of the design decision to require explicit acknowledgments before activating the new owner.
+- coordinator detects crash
+- reconfiguration attempt is aborted
+- metadata returns to `STABLE`
+
+Observation:
+
+The protocol avoids unsafe progress and **converges via fail-fast safe abort**.
 
 ---
 
@@ -398,10 +397,19 @@ Future work will analyze:
 As of this checkpoint:
 
 - the protocol implementation is stable
-- the core safety invariants hold
-- several liveness limitations have been identified
+- the core safety invariants hold under all tested failures
+- bounded liveness has been achieved via timeout, retry, and abort mechanisms
 
-The next stage of the project will focus on **systematic experimentation and analysis** rather than adding new protocol features.
+The system has transitioned from:
+
+- a safety-only design with possible stalls  
+to:
+- a **fault-aware convergent system**
+
+The next stage focuses on:
+
+- deeper evaluation and analysis
+- understanding performance and availability tradeoffs
 
 ---
 
@@ -410,7 +418,7 @@ The next stage of the project will focus on **systematic experimentation and ana
 
 All tests pass:
 
-pytest → 47 passed in 0.21s
+pytest → 87 passed in ~0.35s
 
 
 The repository now contains:
@@ -472,23 +480,21 @@ This confirms that:
 
 ---
 
-### Stall Behavior by Phase
+### Phase Sensitivity
 
-Failures cause the protocol to stall in different phases:
+Failures affect different phases of the protocol:
 
-- **FREEZE stall**  
-  Occurs when the old owner crashes before acknowledging freeze  
-  → system cannot proceed to transfer  
+- **FREEZE phase**
+  - depends on old owner availability
+  - crash leads to immediate abort
 
-- **TRANSFER stall**  
-  Occurs when:
-  - transfer message is dropped, or
-  - new owner crashes before acknowledgment  
-  → system cannot commit ownership  
+- **TRANSFER phase**
+  - depends on reliable message delivery and new owner availability
+  - message loss or crash leads to retry and eventual abort
 
 This shows that:
 
-> Progress depends on successful completion of each phase and its acknowledgment.
+> Each phase introduces a dependency that determines whether the protocol can complete or must abort.
 
 ---
 
@@ -523,22 +529,22 @@ As a result:
 
 ## 13.4 Liveness Analysis
 
-The protocol does not guarantee completion under failures, but it avoids indefinite coordinator-side stalls.
+The updated protocol guarantees bounded convergence under failures.
 
 Observed behavior:
 
-- retries and phase timeouts drive retransmission while budget remains
-- crash detection or timeout exhaustion triggers explicit abort
-- metadata is returned to `STABLE` on aborted attempts
+- retries and phase timeouts drive progress under transient failures
+- partition scenarios recover and complete after connectivity is restored
+- crash and persistent failure scenarios trigger safe abort
 
 As a result:
 
-- reconfiguration converges to completion or safe abort
-- availability is reduced during reconfiguration
+- no scenario results in indefinite stalling
+- every reconfiguration attempt converges to a terminal state
 
-This reflects a deliberate design choice:
+This establishes:
 
-> The protocol prioritizes safety over availability.
+> The protocol guarantees convergence to either successful completion or safe abort.
 
 ---
 
@@ -546,7 +552,13 @@ This reflects a deliberate design choice:
 
 Across all experiments:
 
-> The protocol achieves strong safety guarantees by enforcing strict phase ordering and acknowledgment requirements, but this comes at the cost of liveness under partial failures.
+> The protocol achieves strong safety guarantees while ensuring bounded convergence under unreliable conditions.
+
+This is enabled by:
+
+- strict phase ordering and acknowledgment requirements (safety)
+- timeout and retry mechanisms (progress)
+- safe abort as a fallback (convergence)
 
 # 14. Client-Side Workload Observation
 
