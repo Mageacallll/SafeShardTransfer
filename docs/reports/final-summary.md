@@ -44,7 +44,15 @@ Progress depends on acknowledgments:
 
 Under message loss or crashes:
 
-> **The system may fail to complete reassignment, but now converges by either completion or safe abort.**
+- the original design stalled indefinitely in intermediate states  
+- no server could serve the shard  
+- the coordinator had no mechanism to recover  
+
+This revealed a critical issue:
+
+> **A protocol that is correct under ideal conditions can become unusable under realistic failures.**
+
+We introduced timeout, retry, and abort mechanisms to address this, but this fundamentally changed the complexity of the system.
 
 ---
 
