@@ -132,18 +132,6 @@ to:
 
 - “a system that demonstrates a concrete safety vs availability tradeoff”
 
----
-
-## Final Notes
-
-AI was used as a **reasoning assistant**, not as a source of final answers.
-
-In all cases:
-- we validated suggestions against our implementation
-- we made final design and implementation decisions ourselves
-
-The most valuable contribution of AI was:
-> helping us articulate and recognize the tradeoffs revealed by our system
 
 ---
 
@@ -180,3 +168,22 @@ AI was also used to summarize changes for the various project documents.
 
 **Decision Ownership:**
 AI accelerated implementation and validation, but failure scenario selection, parameter tuning, and interpretation of tradeoffs remained team decisions.
+
+---
+
+## 9. Docs update (Mar 27)
+
+AI was used to generate nice prose for the coordinator tradeoff segments of the docs, but the core ideas were all human created. The prompt was a short summary of ideas that I asked the AI to make look nice.
+
+---
+
+## Final Notes
+
+AI was used as a **reasoning assistant**, not as a source of final answers.
+
+In all cases:
+- we validated suggestions against our implementation
+- we made final design and implementation decisions ourselves
+
+The most valuable contribution of AI was:
+> helping us articulate and recognize the tradeoffs revealed by our system
